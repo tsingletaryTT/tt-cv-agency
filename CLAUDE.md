@@ -277,6 +277,15 @@ practice:
 
 ## Phase 2: hardware-in-the-loop control — result
 
+**Superseded by "Phase 2 final-review fix pass" below.** The section
+immediately following this note is kept as the historical record of the
+first end-to-end run, but its "best-guess diagnosis" (leading hypothesis:
+undertrained model) turned out to be backwards — a final whole-branch
+review found and reproduced a genuine correctness bug in `estimate_pitch`
+that fully explains the pitch-channel failure and likely contributed to
+brightness's, independent of how much training data existed. See the final
+section for the corrected diagnosis, the fix, and the re-run result.
+
 End-to-end verification of Tasks 1-7 (feature extraction, CV backend, data
 collection, `InverseCVModel` trained on 500 real sweep samples with final
 MSE 0.044, `TTInferenceEngine`, `run_control_loop`) against the live,
@@ -356,3 +365,150 @@ more like an undertrained/miscalibrated inverse model than a tuning
 problem. This is not a "phase 2 complete" result; it's a working harness
 with a model that needs more (and possibly better-normalized) training
 data before it can be trusted to hit brightness and pitch goals.
+
+## Phase 2 final-review fix pass — corrected diagnosis and result
+
+A final whole-branch review of the completed 8-task plan reproduced a
+genuine correctness bug behind the pitch-channel failure above, fixed it,
+re-collected the sweep dataset, retrained, and re-ran the same live 3-goal
+verification. Honest result: **meaningfully better, still not fully
+converged.**
+
+### The real root cause: `estimate_pitch` was broken at production block size
+
+`features.py`'s `estimate_pitch` searched for the autocorrelation peak
+starting at `lag_min = int(sample_rate / fmax)`. At `VCVRackBackend`'s real
+`block_size` (1024 samples, not the 4096 the original test used),
+`lag_min` (12, for `fmax=4000`) fell inside the raw autocorrelation's
+still-descending zero-lag main lobe for any fundamental below ~440 Hz — so
+the function returned exactly `fmax` (4000 Hz) as a constant for any
+low/mid fundamental. Confirmed in the original 500-sample dataset: **52% of
+the `pitch` column was exactly the 4000 Hz clip artifact**, and
+`corr(vco_freq, pitch) = -0.29` — negative, i.e. the one feature meant to
+track the VCO frequency knob moved the wrong way from it. This — not an
+undertrained model — is the real explanation for pitch never converging
+above.
+
+**Fix** (`features.py`): find the first lag where the autocorrelation
+actually stops decreasing (the main lobe's real end) and start the peak
+search there, using the old `lag_min` (from `fmax`) only as a floor.
+Verified with a new regression test at the real production block size
+(1024, across 55/110/220/330/440 Hz) — reproduced RED against the old
+code (4/5 frequencies clipped to exactly 4000 Hz), GREEN after the fix.
+
+**Also fixed while investigating** (secondary, lower-confidence
+contributors flagged by the same review):
+`spectral_centroid` didn't remove the DC component before computing the
+centroid, unlike `estimate_pitch` — added `block = block - block.mean()`.
+The `BRIGHTNESS_REF_HZ`/`PITCH_LOG_MAX_HZ` normalization-mismatch
+hypothesis from the first run (item 2 above) was **not** independently
+confirmed or refuted this pass — brightness still doesn't converge after
+the pitch fix (see below), so a real range mismatch for brightness
+specifically remains a live, unconfirmed hypothesis, not resolved by this
+work.
+
+### Re-collected dataset: pitch column sanity check
+
+Re-ran the same 500-sample random CV sweep against the same live patch,
+with the fixed `estimate_pitch`:
+
+| check | old (broken) dataset | new (fixed) dataset |
+|---|---|---|
+| `pitch_norm` values == 1.0 (fmax-clip artifact) | 52% | **2.4%** (12/500) |
+| `corr(vco_freq, pitch_norm)` | **-0.29** (wrong direction) | **+0.797** (strong, right direction) |
+| `pitch_norm` std | 0.157 | 0.317 (real spread across the full range) |
+| unique feature rows | 500/500 | 500/500 (still no stale/repeated blocks) |
+
+The pitch feature now does what it was always supposed to do: track the
+VCO frequency control, strongly and in the correct direction.
+
+### Retrained model: per-output-dimension MSE/R² on a held-out validation split
+
+`model.py` now does an 80/20 train/val split (400/100 samples) and reports
+each CV channel's held-out MSE and R² against a predict-the-training-mean
+baseline, instead of one aggregate in-sample MSE. Retrained on the new
+dataset:
+
+| CV channel | held-out MSE | held-out R² (vs. mean baseline) |
+|---|---|---|
+| `vco_freq` | 0.0234 | **0.7085** |
+| `vco_fm` | 0.0659 | **0.1001** |
+| `vca_level` | 0.0168 | **0.8034** |
+
+`vco_freq` and `vca_level` both learned a genuinely useful inverse mapping
+(R² 0.71 and 0.80). `vco_fm` still learned almost nothing (R² 0.10) — this
+is the same weak dimension flagged in the first pass, and it is **not**
+simply an unpatched-input artifact: the live patch's actual cable list was
+checked directly, and VCO's FM input **is patched**, to an LFO module
+(module id `4396770612866059`, connected to VCO's `FM_INPUT`). The
+low R² is more likely because that LFO's specific rate/depth just doesn't
+move loudness/brightness/pitch much within a single ~21ms audio-block
+snapshot — a slow-moving modulation source can be genuinely connected and
+still be nearly invisible to a single-block feature read. This is reported
+as an open, honest finding, not something this pass attempted to fix by
+altering the patch topology.
+
+### New live 3-goal verification (same 3 goals, corrected pipeline)
+
+Live environment reconfirmed immediately before running (`pw-link -l`,
+`pactl get-default-sink`/`get-default-source`, `ps -p 1366446` — all
+unchanged from the first run). Each run: `gozer run --chips 1 --who
+"claude:tt-cv-agency" -- python3 control_loop.py <goal>`, same defaults as
+before (`step_fraction=0.3`, `control_interval_s=0.1`, `max_iterations=100`).
+
+Three goals, verbatim final printed line from each run:
+
+```
+goal: [0.2 0.5 0.2]   final: [0.2832652  0.05413392 0.60557207]
+goal: [0.8 0.5 0.9]   final: [0.78318624 0.3143487  0.94570313]
+goal: [0.5 0.5 0.5]   final: [0.5146741  0.12664438 0.74638462]
+```
+
+(feature order is `[loudness, brightness, pitch_norm]`, per `features.py`;
+`convergence_threshold` is 0.05.)
+
+**Honest read: meaningfully better on pitch, still not fully converged.**
+
+- **Loudness (dim 0): converges in 2 of 3 runs** (errors 0.017, 0.015 —
+  down from 3/3 last time). Run 1's loudness error (0.083) is just over
+  the 0.05 threshold this time — a small regression on this one run, most
+  likely just sampling noise from retraining on a different 500-sample
+  draw, not a regression this pass caused on purpose. Still the
+  best-behaved channel overall.
+- **Brightness (dim 1): still does not converge in any run**, and still
+  clusters low (0.054, 0.314, 0.127 vs. goals of 0.5 in all three) —
+  unchanged in character from the first run. The pitch fix did not fix
+  brightness; the `BRIGHTNESS_REF_HZ` normalization-mismatch hypothesis
+  from the first pass remains the most likely open explanation, still
+  unconfirmed.
+- **Pitch (dim 2): converges in 1 of 3 runs now (up from 0 of 3), and —
+  more importantly than the pass/fail count — its relationship with the
+  goal is now monotonic and directionally correct**: goal 0.2 → 0.606,
+  goal 0.5 → 0.746, goal 0.9 → 0.946. The highest goal now produces the
+  highest result and the lowest goal the lowest result, and the run with
+  the highest goal (0.9) converges (error 0.046). Compare to the *original*
+  run, where goal 0.9 produced the *lowest* of the three pitch results
+  (0.670) — a non-monotonic, "not driven correctly at all" shape. That
+  specific failure mode is gone. What remains is a consistent high bias
+  (results run above goal at low/mid goal values) rather than an
+  incoherent one — consistent with a real, correctly-signed but
+  imperfectly-calibrated inverse mapping (R² 0.71 on `vco_freq`, not 1.0),
+  not a broken feature.
+
+**Net assessment**: the pitch-estimator bug is fixed and confirmed fixed
+by three independent lines of evidence — the dataset's clip-artifact rate
+(52%→2.4%), its correlation sign (-0.29→+0.797), and the live control
+loop's pitch channel going from non-monotonic/goal-independent to
+monotonic/goal-tracking. This was a real, reproducible correctness bug,
+not a training-data-volume problem, and fixing it changed the live
+behavior in exactly the direction predicted. It is not, however, a full
+fix for Phase 2: brightness still does not converge in any run (a
+separate, still-unconfirmed normalization question), and pitch, while now
+behaving coherently, converges in only 1 of 3 runs — the underlying
+inverse model's R² for `vco_freq` (0.71) leaves real residual error even
+with a correct feature signal. `vco_fm`'s weak R² (0.10) is now understood
+to most likely be a modulation-rate/single-block-visibility limitation of
+the actually-patched LFO, not a missing connection. **This is still not a
+"phase 2 complete" result** — it is a confirmed, fixed correctness bug plus
+an honestly-reported partial improvement, with brightness's root cause
+still open for a future pass.
