@@ -7,21 +7,30 @@ class TTInferenceEngine:
         weights = np.load(weights_path)
         self._device = ttnn.open_device(device_id=device_id)
 
-        def to_device(array):
-            import torch
-            return ttnn.from_torch(
-                torch.tensor(array, dtype=torch.float32),
-                dtype=ttnn.bfloat16,
-                layout=ttnn.TILE_LAYOUT,
-                device=self._device,
-            )
+        try:
+            def to_device(array):
+                import torch
+                return ttnn.from_torch(
+                    torch.tensor(array, dtype=torch.float32),
+                    dtype=ttnn.bfloat16,
+                    layout=ttnn.TILE_LAYOUT,
+                    device=self._device,
+                )
 
-        self._W1 = to_device(weights["W1"])
-        self._b1 = to_device(weights["b1"].reshape(1, -1))
-        self._W2 = to_device(weights["W2"])
-        self._b2 = to_device(weights["b2"].reshape(1, -1))
-        self._W3 = to_device(weights["W3"])
-        self._b3 = to_device(weights["b3"].reshape(1, -1))
+            self._W1 = to_device(weights["W1"])
+            self._b1 = to_device(weights["b1"].reshape(1, -1))
+            self._W2 = to_device(weights["W2"])
+            self._b2 = to_device(weights["b2"].reshape(1, -1))
+            self._W3 = to_device(weights["W3"])
+            self._b3 = to_device(weights["b3"].reshape(1, -1))
+        except Exception:
+            # If any weight fails to stage (malformed/missing key in the
+            # .npz), __init__ never returns an object -- so the caller
+            # never gets a handle on which to call close(). Close the
+            # device here ourselves before re-raising, so a construction
+            # failure never leaks an open device on this shared box.
+            ttnn.close_device(self._device)
+            raise
 
     def predict_cv(self, target_features: np.ndarray) -> np.ndarray:
         import torch
