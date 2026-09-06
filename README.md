@@ -7,11 +7,21 @@ abstracted so the same code should transfer to a real Eurorack system through
 Expert Sleepers CV/audio interfaces later — the basics learned here with a
 VCO/VCA/LFO/EG-style patch are meant to carry over to more exotic modules too.
 
-**Status: work in progress.** Phase 1 (a plain, zero-ML CV/audio bridge) is done
-and verified against live hardware. Phase 2 (a small model trained and run via
-`ttnn` on a Tenstorrent chip, in the actual control loop) is in progress —
-5 of 8 planned steps are implemented, tested, and reviewed; the TTNN inference
-step, the closed-loop wiring, and full live end-to-end verification are next.
+**Status: work in progress, past first full pass.** Phase 1 (a plain, zero-ML
+CV/audio bridge) is done and verified against live hardware. Phase 2 (a small
+model trained and run via `ttnn` on a Tenstorrent chip, in the actual control
+loop) has all 8 planned steps implemented, tested, and reviewed — feature
+extraction, the `CVBackend`/`VCVRackBackend` pair, data collection, the
+inverse-regression model, `TTInferenceEngine` (TTNN inference on real
+hardware), `run_control_loop` (the closed loop itself), and a live
+end-to-end verification against the running patch. A final whole-branch
+review then found and fixed a real correctness bug in the pitch feature
+(see "Results so far" below) and re-ran verification: the pipeline works
+end-to-end on real hardware with no exceptions, one of three target
+features (loudness) converges reliably, and the pitch fix produced a
+measurable, confirmed improvement in the pitch channel's behavior — but
+Phase 2 is not yet a full "hits every goal" result. `CLAUDE.md`'s final
+sections have the detailed diagnosis.
 
 ## Why VCV Rack first
 
@@ -40,12 +50,47 @@ just visual inspection:
 Evenly-spaced control values produce evenly-spaced audio response — a real
 closed loop, not a coincidence.
 
-**Phase 2 so far:** a 3-feature state representation (loudness, brightness,
-pitch — via RMS, spectral centroid, and autocorrelation) extracted from live
-audio; a random CV sweep against the real running patch (500 samples, all three
-features showing real, non-stale variation — loudness alone spans 0.00–0.94,
-std 0.27); a small inverse-regression model (3→32→32→3, ReLU, trained with
-plain supervised regression) fit to that data, final training MSE 0.044.
+**Phase 2:** a 3-feature state representation (loudness, brightness, pitch —
+via RMS, spectral centroid, and autocorrelation) extracted from live audio; a
+random CV sweep against the real running patch (500 samples); a small
+inverse-regression model (3→32→32→3, ReLU) fit to that data; `TTInferenceEngine`
+running that model's weights on a real Tenstorrent chip via `ttnn`; and
+`run_control_loop` closing the loop (read audio → extract features → infer CV
+→ write CV → repeat) against the live patch.
+
+A final whole-branch review found and fixed a genuine bug in
+`estimate_pitch`: at the real production `block_size` (1024 samples), its
+peak search started inside the still-descending autocorrelation main lobe
+for any fundamental below ~440 Hz, so it silently returned a constant
+clipped-to-`fmax` value instead of the real pitch. Confirmed real-world
+impact: 52% of the original 500-sample dataset's `pitch` column was that
+constant artifact, and `corr(vco_freq, pitch) = -0.29` (the feature moved
+the *wrong way* from the knob that controls it). After the fix and a fresh
+500-sample collection: the clip-artifact rate dropped to 2.4%, and
+`corr(vco_freq, pitch) = +0.797`.
+
+Retrained on the corrected dataset with an 80/20 held-out validation split,
+reporting per-channel MSE/R² (against a predict-the-mean baseline) instead
+of one aggregate in-sample number:
+
+| CV channel | held-out MSE | held-out R² |
+|---|---|---|
+| `vco_freq` | 0.0234 | 0.7085 |
+| `vco_fm` | 0.0659 | 0.1001 |
+| `vca_level` | 0.0168 | 0.8034 |
+
+`vco_fm`'s low R² is not an unpatched-input artifact — its FM input is
+confirmed patched to an LFO in the live patch — more likely the LFO's
+rate/depth just doesn't move any of the three features much within a
+single ~21ms audio block.
+
+Re-running the same live 3-goal end-to-end verification with the fixed
+pitch estimator and retrained model: loudness converges in 2 of 3 goals,
+brightness still doesn't converge in any (unchanged, root cause still
+open), and pitch — which previously moved in a non-monotonic,
+goal-independent way — now tracks the goal monotonically and converges in
+1 of 3. Full detail, numbers, and the honest read of what's still broken
+are in `CLAUDE.md`'s "Phase 2 final-review fix pass" section.
 
 ## What's here
 
@@ -62,8 +107,21 @@ plain supervised regression) fit to that data, final training MSE 0.044.
 - `data_collection.py` — sweeps random CV settings against a `CVBackend` and
   logs the resulting `(cv, features)` pairs for training data.
 - `model.py` — `InverseCVModel` (a tiny feedforward regressor mapping target
-  features back to the CV settings that should produce them) and its PyTorch
-  training script.
+  features back to the CV settings that should produce them), its PyTorch
+  training script (with an 80/20 train/val split and per-channel MSE/R²
+  reporting), and `save_weights`/channel-order provenance.
+- `tt_inference.py` — `TTInferenceEngine`: loads the trained weights and runs
+  the model's forward pass on a real Tenstorrent chip via `ttnn` (always
+  behind a `gozer` chip lease). Asserts the loaded weights' recorded CV
+  channel order matches the backend's current one before running, so a
+  channel-order mismatch fails loudly instead of silently driving the wrong
+  physical CV channel.
+- `control_loop.py` — `run_control_loop`: the perceive-decide-act loop itself
+  (read audio → extract features → infer target CV → step toward it → write
+  CV → repeat) against any `CVBackend`.
+- `pyproject.toml` — pytest config; registers the `hardware` marker so tests
+  that touch `ttnn` are skipped by default and only run explicitly, under a
+  `gozer` lease.
 - `roundtrip_test.py` — the very first Phase 1 proof script (CC sweep +
   measured RMS).
 - `tests/` — the test suite for everything above; `FakeCVBackend` keeps most of
