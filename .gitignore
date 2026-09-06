@@ -1,0 +1,15 @@
+# Downloaded/vendored binaries -- not project code
+Rack2Free/
+*.zip
+*.vcvplugin
+quarantined-broken-plugins/
+oscelot_src_Oscelot.cpp
+
+# Generated data/artifacts
+data/
+*.raw
+*.npz
+autosave_patch_backup_blank.json
+
+__pycache__/
+*.pyc
