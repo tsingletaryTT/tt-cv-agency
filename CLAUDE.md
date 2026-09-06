@@ -274,3 +274,85 @@ practice:
   message beyond the very first one doesn't move the mapped parameter. This
   blocks the actual "sweep CV, observe audio change, measure latency" test
   the plan called for.
+
+## Phase 2: hardware-in-the-loop control — result
+
+End-to-end verification of Tasks 1-7 (feature extraction, CV backend, data
+collection, `InverseCVModel` trained on 500 real sweep samples with final
+MSE 0.044, `TTInferenceEngine`, `run_control_loop`) against the live,
+already-running VCV Rack instance (`bridge_test.vcv`, MIDI-CAT CC1/CC2/CC3
+mapped, PipeWire routed to `vcv_loop`/`vcv_loop.monitor` — routing verified
+via `pw-link -l` immediately before the runs, same check that caught the
+Phase 1 silent misroute). Each run: `gozer run --chips 1 -- python3
+control_loop.py <goal>`, default `step_fraction=0.3`,
+`control_interval_s=0.1`, `max_iterations=100`.
+
+Three goals, verbatim final printed line from each run:
+
+```
+goal: [0.2 0.5 0.2]   final: [0.20073959 0.13780009 0.79264883]
+goal: [0.8 0.5 0.9]   final: [0.7918775  0.0735466  0.66985748]
+goal: [0.5 0.5 0.5]   final: [0.48163114 0.14985584 0.8148791 ]
+```
+
+(feature order is `[loudness, brightness, pitch_norm]`, per `features.py`.)
+
+**Honest read: partial convergence, one feature out of three.**
+
+- ✅ **Loudness (dim 0) converges well in all three runs** — 0.201 vs 0.2,
+  0.792 vs 0.8, 0.482 vs 0.5. Error under 0.02 every time, well inside the
+  0.05 `convergence_threshold`. The one feature the model actually learned
+  a usable inverse mapping for.
+- ❌ **Brightness (dim 1) does not converge in any run**, and the failure
+  has a suspicious shape: the goal was 0.5 in *all three* runs, and the
+  measured result landed at 0.138, 0.074, and 0.150 — clustered low
+  regardless of anything else in the goal vector. That's not noise around
+  the target, it's a near-constant output that never moves toward 0.5.
+- ❌ **Pitch (dim 2) does not converge in any run**, with the same
+  "stuck regardless of goal" shape but in the opposite direction: goals of
+  0.2, 0.9, and 0.5 all landed in the same narrow high band — 0.793, 0.670,
+  0.815. Notably, run 2 asked for the *highest* pitch goal (0.9) and
+  produced the *lowest* of the three pitch results (0.670) — the ordering
+  isn't even monotonic with the goal, which rules out "right direction, not
+  enough gain" and points more at "this channel isn't being driven
+  correctly at all."
+
+**Best-guess diagnosis** (not confirmed, just the most likely candidates
+given what's visible from the outside):
+
+1. **Undertrained model, and specifically undertrained on the harder two
+   dimensions.** The training set is 500 of the ~3000 samples the plan
+   called for (Task 5). Loudness (driven near-linearly by VCA level) is the
+   easiest inverse to learn from a small sample; brightness and pitch
+   depend on VCO FM/frequency interacting less linearly with the measured
+   spectrum, and 500 samples may simply not cover that relationship well
+   enough for a 3→32→32→3 MLP to generalize — consistent with brightness
+   and pitch both collapsing toward a fixed output almost independent of
+   the requested goal, which is what an undertrained regressor does when it
+   has learned "the average case" rather than the actual mapping.
+2. **Normalization constants from Task 2 (`features.py`) may not match this
+   patch's real range.** `BRIGHTNESS_REF_HZ = 12000.0` and
+   `PITCH_LOG_MAX_HZ = 4000.0` were chosen before this exact VCO/VCA patch
+   was swept on real hardware. If the patch's actual achievable spectral
+   centroid or pitch range is much narrower than assumed (e.g. the VCO's FM
+   input barely moves the audible pitch, or the VCA's harmonic content
+   never gets bright enough to approach 12kHz centroid), most of the sweep
+   data would land in a compressed corner of the normalized [0,1] range,
+   which would produce exactly the "same output regardless of goal"
+   symptom seen here for both stuck dimensions.
+3. **`step_fraction`/`control_interval_s` are probably not the cause.**
+   Loudness converges cleanly under the same step size and interval used
+   for the other two channels in the same run, so the control loop's
+   step/timing parameters are not obviously the bottleneck — the failure
+   looks like it's in the model's inverse mapping (or the CV→feature
+   physical relationship it was trained on), not the control loop's step
+   dynamics.
+
+**Net assessment**: the full pipeline runs end-to-end against real
+hardware with no exceptions, and the loudness channel demonstrates the
+closed loop genuinely works — but two of three target features do not
+converge, and do so in a way (goal-independent, non-monotonic) that looks
+more like an undertrained/miscalibrated inverse model than a tuning
+problem. This is not a "phase 2 complete" result; it's a working harness
+with a model that needs more (and possibly better-normalized) training
+data before it can be trusted to hit brightness and pitch goals.
