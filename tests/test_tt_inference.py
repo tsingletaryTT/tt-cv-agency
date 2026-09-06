@@ -1,12 +1,16 @@
 import numpy as np
 import pytest
 import torch
-import ttnn
 from model import InverseCVModel, save_weights
-from tt_inference import TTInferenceEngine
 
 
+@pytest.mark.hardware
 def test_tt_inference_matches_pytorch_reference(tmp_path):
+    # Imported here (not at module scope) so merely collecting this test
+    # file never touches ttnn / opens a device without a gozer lease.
+    import ttnn  # noqa: F401
+    from tt_inference import TTInferenceEngine
+
     torch.manual_seed(0)
     model = InverseCVModel()
     weights_path = str(tmp_path / "weights.npz")
@@ -29,6 +33,7 @@ def test_tt_inference_matches_pytorch_reference(tmp_path):
     assert np.allclose(result, reference, atol=0.1)
 
 
+@pytest.mark.hardware
 def test_tt_inference_init_failure_does_not_leak_device(tmp_path):
     """A malformed weights file should raise a clear exception out of
     __init__ AND must not leak the opened device handle.
@@ -40,6 +45,11 @@ def test_tt_inference_init_failure_does_not_leak_device(tmp_path):
     device_id afterward: if the failed engine had leaked its device, this
     second open would fail (device already in use) instead of succeeding.
     """
+    # Imported here (not at module scope) so merely collecting this test
+    # file never touches ttnn / opens a device without a gozer lease.
+    import ttnn
+    from tt_inference import TTInferenceEngine
+
     torch.manual_seed(0)
     model = InverseCVModel()
     weights_path = str(tmp_path / "bad_weights.npz")

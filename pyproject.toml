@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+markers = [
+    "hardware: touches real Tenstorrent hardware via ttnn; requires a gozer chip lease to run (deselected by default — use `-m hardware` explicitly, always under `gozer run --chips 1 ...`)",
+]
+addopts = "-m 'not hardware'"
