@@ -43,16 +43,21 @@ if __name__ == "__main__":
     from backends.vcv_rack import VCVRackBackend
 
     backend = VCVRackBackend("configs/bridge_test.yaml")
-    rng = np.random.default_rng(seed=0)
-    # settle_time_s=0.5 -- confirmed generously above the real settle time
-    # observed in Phase 1's round-trip verification (RMS transitions completed
-    # within a few hundred ms); re-check with a stopwatch-style manual test
-    # (Task 3 Step 6's pattern) if this dataset's model behaves oddly.
-    cv_array, feature_array = collect_sweep_dataset(
-        backend, n_samples=3000, settle_time_s=0.5, sample_rate=48000, rng=rng
-    )
-    import os
-    os.makedirs("data", exist_ok=True)
-    np.savez("data/sweep_dataset.npz", cv=cv_array, features=feature_array, channels=backend.channels())
-    print(f"saved {len(cv_array)} samples to data/sweep_dataset.npz")
-    backend.close()
+    try:
+        rng = np.random.default_rng(seed=0)
+        # settle_time_s=0.5 -- confirmed generously above the real settle time
+        # observed in Phase 1's round-trip verification (RMS transitions completed
+        # within a few hundred ms); re-check with a stopwatch-style manual test
+        # (Task 3 Step 6's pattern) if this dataset's model behaves oddly.
+        cv_array, feature_array = collect_sweep_dataset(
+            backend, n_samples=3000, settle_time_s=0.5, rng=rng
+        )
+        import os
+        os.makedirs("data", exist_ok=True)
+        np.savez("data/sweep_dataset.npz", cv=cv_array, features=feature_array, channels=backend.channels())
+        print(f"saved {len(cv_array)} samples to data/sweep_dataset.npz")
+    finally:
+        # A crash partway through a several-minute collection run must not
+        # leave the audio stream / MIDI port open -- close it even if the
+        # loop above raised.
+        backend.close()

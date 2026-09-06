@@ -11,7 +11,9 @@ def rms(block: np.ndarray) -> float:
 
 
 def spectral_centroid(block: np.ndarray, sample_rate: int) -> float:
-    windowed = block.astype(np.float64) * np.hanning(len(block))
+    block = block.astype(np.float64)
+    block = block - block.mean()  # remove DC, same as estimate_pitch does
+    windowed = block * np.hanning(len(block))
     spectrum = np.abs(np.fft.rfft(windowed))
     freqs = np.fft.rfftfreq(len(block), d=1.0 / sample_rate)
     total = spectrum.sum()
