@@ -27,14 +27,43 @@ def estimate_pitch(block: np.ndarray, sample_rate: int, fmin: float = 20.0, fmax
         return 0.0
     corr = np.correlate(x, x, mode="full")
     corr = corr[len(corr) // 2:]  # keep non-negative lags
-    lag_min = int(sample_rate / fmax)
+    lag_min_floor = int(sample_rate / fmax)
     lag_max = min(int(sample_rate / fmin), len(corr) - 1)
-    if lag_max <= lag_min:
+    if lag_max <= lag_min_floor:
         return 0.0
-    search = corr[lag_min:lag_max]
+
+    # The raw (unnormalized) autocorrelation always starts at its global
+    # maximum at lag 0 and descends through a "main lobe" before the first
+    # period's peak appears. That descent is many lags wide relative to the
+    # true period whenever the fundamental is low (or the block is short
+    # relative to the period) -- e.g. at sample_rate=48000, fmax=4000
+    # (lag_min_floor=12) and the real production block_size of 1024
+    # samples, the main lobe is still descending well past lag 12 for any
+    # fundamental below ~440 Hz. Searching for the peak starting at
+    # lag_min_floor in that regime just finds a point partway down the
+    # main lobe's descending slope, not the true periodicity peak -- which
+    # is why the old implementation returned exactly fmax as a constant for
+    # any low/mid fundamental at production block size.
+    #
+    # Fix: find where the main lobe actually finishes descending (the first
+    # local minimum after lag 0 -- the first lag where the autocorrelation
+    # stops decreasing), and only start the peak search there. lag_min_floor
+    # (derived from fmax) still acts as a floor/sanity bound on top of that,
+    # so the search never starts earlier than the fmax-implied minimum lag.
+    main_lobe_end = 1
+    while main_lobe_end < len(corr) - 1 and corr[main_lobe_end] < corr[main_lobe_end - 1]:
+        main_lobe_end += 1
+    search_start = max(lag_min_floor, main_lobe_end)
+    if search_start >= lag_max:
+        # The main lobe never finished descending before lag_max (e.g. a
+        # fundamental so low its period doesn't fit the block) -- fall back
+        # to the floor-based window rather than searching an empty range.
+        search_start = lag_min_floor
+
+    search = corr[search_start:lag_max]
     if len(search) == 0 or search.max() <= 0:
         return 0.0
-    best_lag = lag_min + int(np.argmax(search))
+    best_lag = search_start + int(np.argmax(search))
     return float(sample_rate / best_lag)
 
 
