@@ -10,9 +10,19 @@ def collect_sweep_dataset(
     backend: CVBackend,
     n_samples: int,
     settle_time_s: float,
-    sample_rate: int,
     rng: np.random.Generator,
+    sample_rate: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
+    # sample_rate is pulled from the backend itself by default -- passing it
+    # in independently is kept only for backward compatibility / test
+    # convenience (e.g. a FakeCVBackend test that wants to assert behavior
+    # at a sample_rate different from its own configured one). Real callers
+    # should let this default to backend.sample_rate() so the value used for
+    # feature extraction can never silently drift from what the backend
+    # actually captured its audio at (this mismatch is exactly how the
+    # estimate_pitch production-block-size bug stayed hidden).
+    if sample_rate is None:
+        sample_rate = backend.sample_rate()
     channels = backend.channels()
     cv_array = np.zeros((n_samples, len(channels)))
     feature_array = np.zeros((n_samples, 3))

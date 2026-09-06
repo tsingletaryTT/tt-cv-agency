@@ -28,3 +28,18 @@ def test_fake_backend_read_audio_block_returns_configured_block():
 def test_cv_backend_is_abstract():
     with pytest.raises(TypeError):
         CVBackend()
+
+
+def test_fake_backend_reports_default_sample_rate_and_block_size():
+    backend = FakeCVBackend(channel_names=["a"])
+    # Defaults match VCVRackBackend's real production values, so a test
+    # written against FakeCVBackend without overriding these exercises the
+    # same numbers the real backend would report.
+    assert backend.sample_rate() == 48000
+    assert backend.block_size() == 1024
+
+
+def test_fake_backend_reports_configured_sample_rate_and_block_size():
+    backend = FakeCVBackend(channel_names=["a"], sample_rate=44100, block_size=512)
+    assert backend.sample_rate() == 44100
+    assert backend.block_size() == 512
