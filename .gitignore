@@ -13,3 +13,6 @@ autosave_patch_backup_blank.json
 
 __pycache__/
 *.pyc
+
+# subagent-driven-development scratch workspace (ledgers, briefs, reports)
+.superpowers/
