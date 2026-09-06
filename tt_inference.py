@@ -2,9 +2,38 @@ import numpy as np
 import ttnn
 
 
+class ChannelMismatchError(ValueError):
+    """Raised when the CV channel order the loaded weights were trained
+    with doesn't match the backend's current channel order. The model's
+    output vector is a plain array with no channel labels attached to it at
+    inference time -- if the order silently disagreed with the backend's
+    actual channels() ordering, predict_cv()'s output would get applied to
+    the wrong physical CV channel with no error at all, just a
+    working-looking-but-wrong control loop."""
+
+
 class TTInferenceEngine:
-    def __init__(self, weights_path: str, device_id: int = 0):
+    def __init__(self, weights_path: str, device_id: int = 0, expected_channels: list[str] | None = None):
         weights = np.load(weights_path)
+
+        if expected_channels is not None:
+            trained_channels = weights["channels"].tolist() if "channels" in weights.files else None
+            if trained_channels is None:
+                raise ChannelMismatchError(
+                    f"{weights_path} was saved without channel-order provenance "
+                    "(model.py's save_weights was called without `channels`), "
+                    f"but the caller expects channel order {expected_channels!r} -- "
+                    "retrain and save with `channels` so this can be verified."
+                )
+            if trained_channels != list(expected_channels):
+                raise ChannelMismatchError(
+                    f"{weights_path} was trained with channel order "
+                    f"{trained_channels!r}, but the backend's current channel "
+                    f"order is {list(expected_channels)!r}. Applying this "
+                    "model's output to the backend's channels in that order "
+                    "would silently drive the wrong CV channel."
+                )
+
         self._device = ttnn.open_device(device_id=device_id)
 
         try:

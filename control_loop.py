@@ -10,12 +10,19 @@ def run_control_loop(
     backend: CVBackend,
     predict_fn: Callable[[np.ndarray], np.ndarray],
     goal_features: np.ndarray,
-    sample_rate: int,
+    sample_rate: int | None = None,
     step_fraction: float = 0.3,
     control_interval_s: float = 0.1,
     max_iterations: int = 100,
     convergence_threshold: float = 0.05,
 ) -> list[np.ndarray]:
+    # sample_rate defaults to the backend's own real value -- passing it
+    # explicitly is kept only for backward compatibility / test convenience.
+    # Real callers should let this pull from backend.sample_rate() so
+    # feature extraction is never fed a sample_rate that silently disagrees
+    # with what the backend actually captured its audio at.
+    if sample_rate is None:
+        sample_rate = backend.sample_rate()
     channels = backend.channels()
     history: list[np.ndarray] = []
 
@@ -50,12 +57,20 @@ if __name__ == "__main__":
     goal = np.array([float(x) for x in sys.argv[1:4]]) if len(sys.argv) >= 4 else np.array([0.7, 0.5, 0.5])
 
     backend = VCVRackBackend("configs/bridge_test.yaml")
-    engine = TTInferenceEngine(weights_path="data/model_weights.npz")
     try:
-        history = run_control_loop(
-            backend, predict_fn=engine.predict_cv, goal_features=goal, sample_rate=48000,
+        # expected_channels ties the loaded weights' trained channel order to
+        # this backend's actual current channel order -- raises a clear
+        # ChannelMismatchError instead of silently driving the wrong CV
+        # channel if they ever disagree (e.g. a config/model mismatch).
+        engine = TTInferenceEngine(
+            weights_path="data/model_weights.npz", expected_channels=backend.channels(),
         )
-        print(f"final measured features: {history[-1]}, goal: {goal}")
+        try:
+            history = run_control_loop(
+                backend, predict_fn=engine.predict_cv, goal_features=goal,
+            )
+            print(f"final measured features: {history[-1]}, goal: {goal}")
+        finally:
+            engine.close()
     finally:
-        engine.close()
         backend.close()

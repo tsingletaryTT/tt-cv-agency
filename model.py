@@ -34,7 +34,16 @@ def train_model(cv_array: np.ndarray, feature_array: np.ndarray, epochs: int = 2
     return model
 
 
-def save_weights(model: InverseCVModel, path: str) -> None:
+def save_weights(model: InverseCVModel, path: str, channels: list[str] | None = None) -> None:
+    # `channels` records the CV channel order (from backend.channels()) this
+    # model's outputs were trained against -- e.g. ["vco_freq", "vco_fm",
+    # "vca_level"]. It's optional (so existing callers/tests that only care
+    # about the weight arrays keep working unchanged), but any real training
+    # run should pass it: without it, nothing stops the model's output
+    # vector being applied to CV channels in the wrong order at inference
+    # time, a silent-wrong-channel failure mode that would look like a
+    # working-but-wrong control loop rather than an error.
+    extra = {"channels": np.array(channels)} if channels is not None else {}
     np.savez(
         path,
         W1=model.fc1.weight.detach().numpy().T,
@@ -43,6 +52,7 @@ def save_weights(model: InverseCVModel, path: str) -> None:
         b2=model.fc2.bias.detach().numpy(),
         W3=model.fc3.weight.detach().numpy().T,
         b3=model.fc3.bias.detach().numpy(),
+        **extra,
     )
 
 

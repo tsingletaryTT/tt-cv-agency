@@ -69,3 +69,33 @@ def test_tt_inference_init_failure_does_not_leak_device(tmp_path):
     # would raise (device already active) instead of succeeding cleanly.
     probe_device = ttnn.open_device(device_id=0)
     ttnn.close_device(probe_device)
+
+
+@pytest.mark.hardware
+def test_tt_inference_rejects_channel_order_mismatch(tmp_path):
+    # Imported here (not at module scope) so merely collecting this test
+    # file never touches ttnn / opens a device without a gozer lease.
+    import ttnn  # noqa: F401
+    from tt_inference import ChannelMismatchError, TTInferenceEngine
+
+    torch.manual_seed(0)
+    model = InverseCVModel()
+    weights_path = str(tmp_path / "weights.npz")
+    save_weights(model, weights_path, channels=["vco_freq", "vco_fm", "vca_level"])
+
+    # A mismatched expected_channels order must be rejected before a device
+    # is even opened -- the channel check happens ahead of ttnn.open_device.
+    with pytest.raises(ChannelMismatchError):
+        TTInferenceEngine(weights_path=weights_path, expected_channels=["vca_level", "vco_fm", "vco_freq"])
+
+    # A weights file with no channel provenance at all is also rejected
+    # when the caller supplies expected_channels, rather than silently
+    # skipping the check.
+    unlabeled_weights_path = str(tmp_path / "unlabeled_weights.npz")
+    save_weights(model, unlabeled_weights_path)
+    with pytest.raises(ChannelMismatchError):
+        TTInferenceEngine(weights_path=unlabeled_weights_path, expected_channels=["vco_freq", "vco_fm", "vca_level"])
+
+    # A matching order constructs cleanly and must still be closed.
+    engine = TTInferenceEngine(weights_path=weights_path, expected_channels=["vco_freq", "vco_fm", "vca_level"])
+    engine.close()
