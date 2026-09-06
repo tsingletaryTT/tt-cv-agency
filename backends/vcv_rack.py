@@ -23,10 +23,22 @@ class VCVRackBackend(CVBackend):
 
         self._midi_port = mido.open_output(midi_port_name)
 
-        self._audio_queue: queue.Queue = queue.Queue()
+        # Bounded to a single slot: the audio callback must never block, and
+        # callers only ever want the most recent block, not a deep backlog.
+        # Each callback invocation drops whatever stale block is waiting (if
+        # any) and replaces it with the freshly captured one.
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=1)
 
         def _callback(indata, frames, time_info, status):
-            self._audio_queue.put(indata.copy())
+            block = indata.copy()
+            try:
+                self._audio_queue.get_nowait()  # drop the stale block if one is waiting
+            except queue.Empty:
+                pass
+            try:
+                self._audio_queue.put_nowait(block)
+            except queue.Full:
+                pass  # extremely unlikely race with another consumer; drop this block rather than block the audio thread
 
         pulse_device = next(
             i for i, d in enumerate(sd.query_devices())
