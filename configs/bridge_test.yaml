@@ -1,0 +1,9 @@
+# configs/bridge_test.yaml
+midi_port_name: "Midi Through:Midi Through Port-0 14:0"
+channels:
+  vco_freq:
+    cc: 1
+  vco_fm:
+    cc: 2
+  vca_level:
+    cc: 3
