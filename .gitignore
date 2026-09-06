@@ -14,5 +14,8 @@ autosave_patch_backup_blank.json
 __pycache__/
 *.pyc
 
+# TTNN runtime artifacts (fabric/inspector/watcher logs from device execution)
+generated/
+
 # subagent-driven-development scratch workspace (ledgers, briefs, reports)
 .superpowers/
