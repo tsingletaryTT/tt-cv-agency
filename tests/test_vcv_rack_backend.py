@@ -59,3 +59,26 @@ def test_channels_returns_config_keys(mock_open_output, mock_input_stream, tmp_p
     )
     backend = VCVRackBackend(config_path=str(config_path))
     assert backend.channels() == ["a", "b"]
+
+
+@patch("backends.vcv_rack.sd.InputStream")
+@patch("backends.vcv_rack.mido.open_output")
+def test_callback_keeps_only_latest_block_in_bounded_queue(mock_open_output, mock_input_stream, tmp_path):
+    config_path = tmp_path / "test.yaml"
+    config_path.write_text("midi_port_name: 'Fake Port'\nchannels:\n  a:\n    cc: 1\n")
+    backend = VCVRackBackend(config_path=str(config_path))
+
+    # Grab the callback VCVRackBackend registered with sd.InputStream(...)
+    callback = mock_input_stream.call_args.kwargs["callback"]
+
+    first_block = np.ones((4, 2), dtype=np.float32) * 0.1
+    second_block = np.ones((4, 2), dtype=np.float32) * 0.9
+    callback(first_block, 4, None, None)
+    callback(second_block, 4, None, None)
+
+    # Queue should hold exactly one (the latest) block, not both
+    assert backend._audio_queue.qsize() == 1
+    result = backend.read_audio_block()
+    # read_audio_block mono-mixes stereo -- the *second* (latest) block's
+    # values should be what comes back, not the first
+    assert np.allclose(result, np.mean(second_block, axis=1))
