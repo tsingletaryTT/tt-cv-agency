@@ -1,4 +1,7 @@
+import math
 import numpy as np
+
+from backends.base import CVBackend
 
 LOUDNESS_REF_RMS = 0.4
 # Recalibrated against this patch's real achievable spectral centroid range: a
@@ -110,3 +113,16 @@ def extract_features_aggregated(blocks: list[np.ndarray], sample_rate: int) -> n
     return np.array(
         [means[0], stds[0], means[1], stds[1], means[2], stds[2]], dtype=np.float64
     )
+
+
+def read_aggregated_window(backend: CVBackend, sample_rate: int, aggregate_window_s: float) -> np.ndarray:
+    """Read a window of audio blocks spanning roughly aggregate_window_s
+    seconds from `backend` and reduce it to the 6-dim aggregated feature
+    vector via extract_features_aggregated. A single instantaneous block
+    can't represent a looping/evolving pattern (a sequencer, an LFO sweep)
+    -- this is the shared read used by both data_collection.py's sweep
+    collection and control_loop.py's per-iteration read, so the two never
+    drift out of sync on how a window is sized."""
+    blocks_per_window = max(1, math.ceil(aggregate_window_s * sample_rate / backend.block_size()))
+    blocks = [backend.read_audio_block() for _ in range(blocks_per_window)]
+    return extract_features_aggregated(blocks, sample_rate)

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from features import rms, spectral_centroid, estimate_pitch, extract_features, extract_features_aggregated
+from features import rms, spectral_centroid, estimate_pitch, extract_features, extract_features_aggregated, read_aggregated_window
 
 
 def test_rms_of_silence_is_zero():
@@ -94,3 +94,13 @@ def test_extract_features_aggregated_detects_modulation():
     modulated_result = extract_features_aggregated(modulated_blocks, sample_rate)
     loudness_std_index = 1
     assert modulated_result[loudness_std_index] > static_result[loudness_std_index] * 2
+
+
+def test_read_aggregated_window_reads_multiple_blocks():
+    from backends.base import FakeCVBackend
+
+    backend = FakeCVBackend(channel_names=["a"], sample_rate=48000, block_size=1024)
+    result = read_aggregated_window(backend, sample_rate=48000, aggregate_window_s=0.1)
+    assert result.shape == (6,)
+    # 0.1s * 48000 / 1024 = 4.6875 -> ceil to 5 blocks
+    assert len(backend.set_cv_calls) == 0  # this helper only reads, never writes CV

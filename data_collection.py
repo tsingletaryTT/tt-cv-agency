@@ -1,10 +1,9 @@
 # data_collection.py
-import math
 import time
 import numpy as np
 
 from backends.base import CVBackend
-from features import extract_features_aggregated
+from features import read_aggregated_window
 
 
 def collect_sweep_dataset(
@@ -31,7 +30,6 @@ def collect_sweep_dataset(
     # extract_features_aggregated, which reduces the window to [mean, std]
     # per feature (6-dim). block_size is pulled from the backend itself for
     # the same drift-proofing reason sample_rate is.
-    blocks_per_window = max(1, math.ceil(aggregate_window_s * sample_rate / backend.block_size()))
     channels = backend.channels()
     cv_array = np.zeros((n_samples, len(channels)))
     feature_array = np.zeros((n_samples, 6))
@@ -41,8 +39,7 @@ def collect_sweep_dataset(
         for ch, value in zip(channels, cv_vec):
             backend.set_cv(ch, float(value))
         time.sleep(settle_time_s)
-        blocks = [backend.read_audio_block() for _ in range(blocks_per_window)]
-        feature_array[i] = extract_features_aggregated(blocks, sample_rate)
+        feature_array[i] = read_aggregated_window(backend, sample_rate, aggregate_window_s)
         cv_array[i] = cv_vec
 
     return cv_array, feature_array

@@ -1,10 +1,9 @@
-import math
 import time
 from typing import Callable
 import numpy as np
 
 from backends.base import CVBackend
-from features import extract_features_aggregated
+from features import read_aggregated_window
 
 
 def run_control_loop(
@@ -32,13 +31,11 @@ def run_control_loop(
     # goal_features must now be 6-dim to match (breaking change -- see Task 4
     # brief). The __main__ block below was updated in Task 5 to pass a 6-dim
     # goal and point at the new 8-channel sequencer_test patch.
-    blocks_per_window = max(1, math.ceil(aggregate_window_s * sample_rate / backend.block_size()))
     channels = backend.channels()
     history: list[np.ndarray] = []
 
     for _ in range(max_iterations):
-        blocks = [backend.read_audio_block() for _ in range(blocks_per_window)]
-        current_features = extract_features_aggregated(blocks, sample_rate)
+        current_features = read_aggregated_window(backend, sample_rate, aggregate_window_s)
         history.append(current_features)
 
         if np.linalg.norm(current_features - goal_features) < convergence_threshold:
