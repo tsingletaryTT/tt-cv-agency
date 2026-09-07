@@ -784,3 +784,56 @@ doesn't capture well. Not every screenshot taken during a session needs
 keeping (a debugging zoom-crop of one widget isn't journal-worthy) —
 save the ones that show real patch/instrument state, the way the
 Minimoog screenshot showed the whole signal chain at once.
+
+## A four-stage roadmap (2026-09-07): instruction-following, exploration,
+and predictive control, sequenced instead of picked
+
+Prompted by a "what would training on this patch even look like?" question
+against a concrete example — "make a squelchy, resonant acid bass patch
+and play a looping sequence on it while sweeping subtly on the filter."
+Broke that down: it's really three different asks bundled together (a
+timbral target, a discrete note sequence, and a continuous automation
+gesture), and our reflex model only does the first — it holds one static
+point, with no notion of time at all.
+
+Three candidate directions came out of that, each pulling from a
+different thread of the project so far:
+
+- **Path A — instruction-to-preset.** An LLM parses an instruction
+  directly into a structured CV recipe; no training involved. Fastest,
+  lowest-risk, ships the literal ask soonest.
+- **Path B — learned exploration, no goals.** An agent sweeps the CV
+  space looking for regions that are meaningfully different from each
+  other, building a discovered map/preset library rather than chasing a
+  target — the "more hands than a couple, sometimes just to discover
+  what's possible" idea, and a revival of the original brainstorming
+  session's ensemble/novelty-search pattern.
+- **Path C — trajectory-predicting control.** Predict and search over
+  short CV *action sequences* (not single points) to steer toward a goal
+  over time — the actual fulfillment of the tt-vjepa2 predictor+CEM idea
+  that started this whole project, finally justified once there's an
+  instrument with a real trajectory to predict.
+
+Decision: not one of these, all three, staged by real dependency order
+rather than picked arbitrarily:
+
+1. **Stage 0 — foundation.** Build a temporal instrument (sequencer +
+   LFO) and fix the "read one static block" assumption baked into
+   `data_collection.py`/`control_loop.py` — nothing downstream works
+   without this. Spec: `docs/superpowers/specs/
+   2026-09-07-sequencer-lfo-foundation-design.md`.
+2. **Stage 1 (Path A).** Ships fastest, and doubles as a qualitative
+   "does this sound right" check for everything built afterward.
+3. **Stage 2 (Path B).** Produces better, non-uniform training data than
+   uniform-random sampling, and empirically checks Path A's semantic
+   guesses ("does the LLM's idea of 'squelchy' land in a real
+   high-resonance region we actually found?").
+4. **Stage 3 (Path C).** Needs Stage 2's exploration data extended into
+   logged action-trajectories; the most ambitious and most dependent on
+   everything before it.
+
+**The closing loop**: once Stage 3 exists, Stage 1 gets upgraded — an
+instruction stops meaning "set this static recipe" and starts meaning
+"steer toward this goal over time," with Stage 3's predictor doing the
+steering. The three paths converge into one system rather than staying
+three parallel features.
