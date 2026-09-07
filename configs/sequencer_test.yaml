@@ -1,0 +1,25 @@
+# configs/sequencer_test.yaml
+# Channel map for patches/sequencer_test.vcv (adds a self-clocked SEQ3
+# sequencer, a slow filter-sweep LFO, and an ADSR filter envelope on top
+# of the Minimoog patch's 3xVCO -> Mixer -> VCF -> VCA signal path).
+# See CLAUDE.md / docs/superpowers/specs/2026-09-07-sequencer-lfo-foundation-design.md
+# for the design and docs/superpowers/plans/2026-09-07-sequencer-lfo-foundation.md
+# Task 1 for exactly which module/param each channel drives.
+midi_port_name: "Midi Through:Midi Through Port-0 14:0"
+channels:
+  vco_freq:
+    cc: 1
+  vcf_cutoff:
+    cc: 2
+  vca_level:
+    cc: 3
+  seq_tempo:
+    cc: 4
+  sweep_rate:
+    cc: 5
+  sweep_depth:
+    cc: 6
+  filter_env_amount:
+    cc: 7
+  vcf_resonance:
+    cc: 8
