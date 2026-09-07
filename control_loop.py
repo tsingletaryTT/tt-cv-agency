@@ -30,9 +30,8 @@ def run_control_loop(
     # window of blocks spanning aggregate_window_s seconds and reduces it to
     # the 6-dim [mean, std] x [loudness, brightness, pitch] aggregate.
     # goal_features must now be 6-dim to match (breaking change -- see Task 4
-    # brief). The __main__ block below still passes a 3-dim goal and is left
-    # as-is here on purpose: updating it to point at the new 6-feature/
-    # 8-channel patch is Task 5's job, not this task's.
+    # brief). The __main__ block below was updated in Task 5 to pass a 6-dim
+    # goal and point at the new 8-channel sequencer_test patch.
     blocks_per_window = max(1, math.ceil(aggregate_window_s * sample_rate / backend.block_size()))
     channels = backend.channels()
     history: list[np.ndarray] = []
@@ -65,16 +64,28 @@ if __name__ == "__main__":
     from backends.vcv_rack import VCVRackBackend
     from tt_inference import TTInferenceEngine
 
-    goal = np.array([float(x) for x in sys.argv[1:4]]) if len(sys.argv) >= 4 else np.array([0.7, 0.5, 0.5])
+    # 6-dim goal: [mean, std] x [loudness, brightness, pitch], per
+    # extract_features_aggregated (features.py). Accept it as 6 positional
+    # argv values (sys.argv[1:7]) instead of the old 3; fall back to a
+    # sensible default goal (mid-loudness, low variation, mid-brightness,
+    # a bit of variation, mid-pitch, low variation) if none are given.
+    goal = (
+        np.array([float(x) for x in sys.argv[1:7]])
+        if len(sys.argv) >= 7
+        else np.array([0.5, 0.05, 0.5, 0.1, 0.5, 0.05])
+    )
 
-    backend = VCVRackBackend("configs/bridge_test.yaml")
+    # configs/sequencer_test.yaml -- the current (Stage 0) instrument: 8 CV
+    # channels driving a sequencer + filter-sweep LFO + filter envelope on
+    # top of the Minimoog signal path (see CLAUDE.md's Stage 0 sections).
+    backend = VCVRackBackend("configs/sequencer_test.yaml")
     try:
         # expected_channels ties the loaded weights' trained channel order to
         # this backend's actual current channel order -- raises a clear
         # ChannelMismatchError instead of silently driving the wrong CV
         # channel if they ever disagree (e.g. a config/model mismatch).
         engine = TTInferenceEngine(
-            weights_path="data/model_weights.npz", expected_channels=backend.channels(),
+            weights_path="data/sequencer_model_weights.npz", expected_channels=backend.channels(),
         )
         try:
             history = run_control_loop(

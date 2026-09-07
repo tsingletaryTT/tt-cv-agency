@@ -51,7 +51,13 @@ def collect_sweep_dataset(
 if __name__ == "__main__":
     from backends.vcv_rack import VCVRackBackend
 
-    backend = VCVRackBackend("configs/bridge_test.yaml")
+    # configs/sequencer_test.yaml -- the current (Stage 0) instrument: 8
+    # CV channels driving a sequencer + filter-sweep LFO + filter envelope
+    # on top of the Minimoog signal path (see CLAUDE.md's Stage 0 sections).
+    # aggregate_window_s=5.0 (the collect_sweep_dataset default) matters here
+    # too -- it must be long enough to span at least one loop of the
+    # sequencer/LFO for the windowed [mean, std] features to mean anything.
+    backend = VCVRackBackend("configs/sequencer_test.yaml")
     try:
         rng = np.random.default_rng(seed=0)
         # settle_time_s=0.5 -- confirmed generously above the real settle time

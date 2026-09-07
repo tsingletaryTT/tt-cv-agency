@@ -837,3 +837,140 @@ instruction stops meaning "set this static recipe" and starts meaning
 "steer toward this goal over time," with Stage 3's predictor doing the
 steering. The three paths converge into one system rather than staying
 three parallel features.
+
+## Stage 0 end-to-end sanity check (2026-09-07): the new sequencer/LFO
+instrument, proven live, honestly weak with only 300 samples
+
+Task 5 of the Stage 0 plan (`docs/superpowers/plans/
+2026-09-07-sequencer-lfo-foundation.md`) — the capstone task, and the
+plan's own stated bar for the whole stage being done. Goal: prove the
+whole pipeline (windowed aggregation, the parametric model, the updated
+control loop) actually runs end-to-end against `patches/sequencer_test.vcv`
+(8 CV channels, real temporal behavior — a sequencer, filter-sweep LFO,
+filter envelope). Explicitly **a foundation smoke test, not a claim that
+this instrument is well-controlled** — that's Stages 1-3's job. The bar
+here is "the loop runs, converges even approximately, and nothing throws."
+
+**Launch check.** `sequencer_test.vcv` was already running from an earlier
+session (healthy, autosaving normally, PipeWire routed to `vcv_loop`/
+`vcv_loop.monitor` as expected — reconfirmed via `pw-link -l`). A
+screenshot of the live MIDI-CAT module confirmed its input device resolved
+correctly (`Midi Through:Midi Through Port-0 14:0`, all channels) — output
+shows `(No device)`, which is expected and unused (no MIDI feedback
+configured, same as every prior patch in this project). The mapping list
+scrolled to show `vca_level`/`seq_tempo`/`sweep_rate`/`sweep_depth`/
+`filter_env_amount`/`vcf_resonance` plus `Unmapped` below them (`vco_freq`/
+`vcf_cutoff` were above the visible scroll window, not missing).
+
+**Code changes.** Both `data_collection.py`'s and `control_loop.py`'s
+`__main__` blocks previously still pointed at `configs/bridge_test.yaml`
+(the old 3-channel patch) and, in `control_loop.py`, parsed exactly 3 goal
+values from `sys.argv[1:4]` with a 3-dim default goal — stale since Task 4
+made `goal_features` 6-dim. Updated both to point at
+`configs/sequencer_test.yaml`; `control_loop.py`'s argv parsing now reads
+6 values (`sys.argv[1:7]`) with a 6-dim default goal
+(`[0.5, 0.05, 0.5, 0.1, 0.5, 0.05]`, i.e. mid-loudness/brightness/pitch
+with a bit of expected variation on each) and its weights path default
+changed to `data/sequencer_model_weights.npz`.
+
+**Dataset collection.** 300 samples, `settle_time_s=0.5`,
+`aggregate_window_s=5.0`, random CV sweep (seed 0) against the live patch
+— run in the background per this project's established long-collection
+pattern (`nohup ... & disown`, polled in ~10-minute chunks). Took close to
+the predicted ~27-30 minutes; finished cleanly (`saved 300 samples`).
+Result: `data/sequencer_sweep_dataset.npz`, shape `(300, 8)` CV / `(300, 6)`
+features, channels `[vco_freq, vcf_cutoff, vca_level, seq_tempo,
+sweep_rate, sweep_depth, filter_env_amount, vcf_resonance]`.
+
+**Retrained model, 80/20 train/val split (240/60 samples), per-channel
+held-out MSE/R² against a predict-the-mean baseline:**
+
+| CV channel | held-out MSE | held-out R² |
+|---|---|---|
+| `vco_freq` | 0.0638 | 0.1194 |
+| `vcf_cutoff` | 0.0271 | **0.6530** |
+| `vca_level` | 0.0653 | 0.2260 |
+| `seq_tempo` | 0.0799 | 0.0287 |
+| `sweep_rate` | 0.0777 | **-0.0312** |
+| `sweep_depth` | 0.0962 | 0.0351 |
+| `filter_env_amount` | 0.0785 | 0.0349 |
+| `vcf_resonance` | 0.0747 | 0.2044 |
+
+**Honest read: weak across the board, exactly as the plan warned was
+plausible with 300 samples spread across an 8-dimensional CV space.**
+`vcf_cutoff` is the one channel that learned a genuinely useful inverse
+mapping (R² 0.65, in the same range as `vco_freq`/`vca_level`'s
+best-case numbers from earlier, larger datasets on the older 3-channel
+patch). Notably, even `vco_freq` and `vca_level` — the direct-knob
+channels that behaved reasonably well before (R² 0.95 and 0.99 on 3000
+samples against the old patch) — only manage 0.12 and 0.23 here. This
+isn't evidence those channels got harder to control; it's the same
+"undertrained on a small sample" shape flagged in the Phase 2 sections
+above, now spread across 8 outputs instead of 3, so each one sees a
+proportionally smaller share of 300 samples' information. `sweep_rate`'s
+R² is actually negative — worse than always predicting the training
+mean — consistent with a genuinely temporal channel (an LFO rate) being
+close to invisible to a 5-second aggregate window at this sample count,
+not a bug in the feature or the channel.
+
+**Live control-loop verification** (`gozer run --chips 1 --who
+"claude:tt-cv-agency" -- python3 -c ...`, goal
+`[0.5, 0.05, 0.5, 0.1, 0.5, 0.05]`, i.e. mid mean / low std for
+loudness/brightness/pitch, `aggregate_window_s=5.0`, otherwise default
+`step_fraction=0.3`/`control_interval_s=0.1`/`max_iterations=100`):
+
+```
+final: [0.39106533 0.02614929 0.38486939 0.02202998 0.37555966 0.09488796]
+goal:  [0.5        0.05       0.5        0.1        0.5        0.05      ]
+```
+
+Per-dimension absolute error: `[0.109, 0.024, 0.115, 0.078, 0.124, 0.045]`;
+Euclidean norm of the error: **0.222** (the loop's own
+`convergence_threshold` is 0.05, so this run did not tightly converge).
+**Honest read**: no exceptions anywhere in ~100 iterations against real
+hardware and a real running VCV Rack instance — the full pipeline
+(windowed aggregation reads, the 8-in/6-out parametric model, the
+control step, the TT inference engine) executes correctly end-to-end.
+Convergence is rough but directionally present: all three mean-features
+(loudness, brightness, pitch — dims 0/2/4) landed consistently *below*
+their 0.5 goals by a similar amount (~0.11–0.12) rather than scattered
+randomly, which looks more like a systematic undershoot from an
+undertrained model than "not being driven at all." This matches the
+smoke-test bar this task set out to clear ("the loop runs, converges even
+approximately, and nothing throws") — it does **not** demonstrate
+well-controlled convergence, and shouldn't be read as one.
+
+**Operational note (a mistake, corrected, not hidden):** the first live
+control-loop attempt was wrapped in a stray shell `timeout 200`, which
+SIGTERM'd the `gozer run` process partway through its ~500-560s expected
+runtime (100 iterations × ~5s each). `gozer status` briefly showed chip 0
+as `HELD-FOREIGN` afterward — investigated per the `gozer-gatekeeper`
+skill rather than force-releasing or resetting blind. Root cause: `gozer
+run`'s own shutdown/cleanup took a little longer than the `timeout`
+grace period, not a genuinely stuck process or an unsafe reset condition
+— the lease self-resolved to `FREE` within seconds once the underlying
+processes finished exiting on their own. No `gozer release --force` or
+manual `tt-smi -r` was needed. The corrected re-run (no external
+`timeout` wrapper, just the plain `gozer run ... -- python3 ...`
+backgrounded and polled) is the run reported above.
+
+**Full test suite**, per the plan's own stated bar for Stage 0 being
+done: `python3 -m pytest -q` → **44 passed, 4 deselected**; `gozer run
+--chips 1 --who "claude:tt-cv-agency" --reason "final Stage 0 suite
+check" -- python3 -m pytest -q -m hardware` → **4 passed, 44
+deselected**. All 48 tests green (existing + everything added across
+Tasks 1-4), no regressions from this task's `__main__` edits.
+
+**Net assessment**: the Stage 0 foundation (windowed feature aggregation,
+the parametric model, the updated data-collection/control-loop code) is
+proven to run correctly end-to-end against the new 8-channel temporal
+instrument, with real hardware in the loop and zero exceptions. It is
+**not** proof that this instrument is well-controlled at 300 samples —
+most of the 8 output dimensions show weak-to-negative held-out R², and
+the live control loop's convergence is rough — and this section reports
+that plainly rather than reframing a 300-sample smoke test as a finished
+result. Getting from here to a genuinely well-controlled 8-channel
+instrument is explicitly out of scope for Stage 0 and belongs to whatever
+data-collection volume/strategy Stages 1-3 bring (Stage 2's exploration-
+driven sampling in particular is a direct candidate for doing better than
+uniform-random 300-sample coverage of an 8-dimensional space).
