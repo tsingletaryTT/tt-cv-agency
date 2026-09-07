@@ -64,10 +64,10 @@
 - [ ] **Step 1: Write the patch-construction script**
 
 Write a Python script (e.g. `/tmp/.../build_sequencer_patch.py`, not committed — only its *output* is) that:
-1. Unpacks `patches/minimoog_test.vcv` (`tar --zstd -xf ... patch.json`) to get the existing 9-module/7-cable base as a Python dict.
+1. Unpacks `patches/minimoog_test.vcv` (`tar --zstd -xf ... patch.json`) to get the existing 9-module/10-cable base as a Python dict.
 2. Appends the 3 new modules (ids 10, 11, 12) with the params/data described above.
 3. Mutates the existing module 5 (`VCF`) entry's `FREQ_CV_PARAM` (paramId 3) from `0.0` to `1.0`.
-4. Appends the 6 new cables described above (with new unique cable ids, continuing from the existing patch's highest cable id).
+4. Appends the 8 new cables described above (with new unique cable ids, continuing from the existing patch's highest cable id).
 5. Appends the 5 new MidiCat maps to the existing module 8's `data.maps` list.
 6. Writes the result back out, repacks with `tar --zstd -cf patches/sequencer_test.vcv -C <dir> patch.json`.
 
