@@ -899,19 +899,56 @@ held-out MSE/R² against a predict-the-mean baseline:**
 **Honest read: weak across the board, exactly as the plan warned was
 plausible with 300 samples spread across an 8-dimensional CV space.**
 `vcf_cutoff` is the one channel that learned a genuinely useful inverse
-mapping (R² 0.65, in the same range as `vco_freq`/`vca_level`'s
-best-case numbers from earlier, larger datasets on the older 3-channel
-patch). Notably, even `vco_freq` and `vca_level` — the direct-knob
-channels that behaved reasonably well before (R² 0.95 and 0.99 on 3000
-samples against the old patch) — only manage 0.12 and 0.23 here. This
-isn't evidence those channels got harder to control; it's the same
-"undertrained on a small sample" shape flagged in the Phase 2 sections
-above, now spread across 8 outputs instead of 3, so each one sees a
-proportionally smaller share of 300 samples' information. `sweep_rate`'s
-R² is actually negative — worse than always predicting the training
-mean — consistent with a genuinely temporal channel (an LFO rate) being
-close to invisible to a 5-second aggregate window at this sample count,
-not a bug in the feature or the channel.
+mapping — R² 0.65 is close to `vco_freq`/`vca_level`'s *500-sample-era*
+numbers on the older 3-channel patch (0.7085/0.8034, not their eventual
+3000-sample numbers of 0.9540/0.9899 quoted below — comparing against
+those would be comparing across a 10x difference in dataset size, an
+apples-to-oranges comparison this section corrected itself on when the
+fix-round review caught the contradiction). It's also `vcf_cutoff`'s
+first-ever trained result — it didn't exist as a channel before this
+stage, so there's no prior number for it at all besides this one.
+Notably, even `vco_freq` and `vca_level` — the direct-knob channels that
+behaved reasonably well before (R² 0.95 and 0.99 on 3000 samples against
+the old patch) — only manage 0.12 and 0.23 here. Rather than one blanket
+"undertrained on a small sample" explanation for every weak channel, the
+more useful read separates what's confirmed from what's plausible:
+
+- `vco_freq`, `vca_level`, `vcf_resonance` — direct-knob channels that
+  scored well with 3000 samples before (R² 0.95/0.99) and still show a
+  positive, if weak, R² here (0.12/0.23/0.20). "Undertrained on a small
+  sample, now spread across 8 outputs instead of 3" is a fair explanation
+  for these three specifically — nothing about them changed except the
+  amount of data and the number of competing output dimensions.
+- `seq_tempo` (R² 0.029) — **not** just a small-sample story. This
+  300-sample dataset was collected *before* this fix round's range
+  correction (see the fix-round section below), when roughly 45% of
+  `seq_tempo`'s CV range produced an aggregation window shorter than one
+  full 8-step loop — exactly the "one block catches a random instant"
+  problem this whole stage exists to fix, just recurring at a coarser
+  grain. That's a concrete, confirmed mechanism for this channel's weak
+  R², not merely "needs more data." The range fix should make future
+  `seq_tempo` data collection meaningfully better, but this *existing*
+  300-sample dataset still reflects the pre-fix range, so its R² for this
+  channel shouldn't be expected to improve without a fresh collection.
+- `sweep_rate` (R² -0.031, actually negative) — consistent with a
+  genuinely temporal channel (an LFO rate) being close to invisible to a
+  5-second aggregate window at this sample count, not a bug in the feature
+  or the channel. (The fix-round section below found a further wrinkle
+  worth flagging for whoever collects fresh data against this channel
+  next: post-fix, a raw centroid-std feature stopped discriminating slow
+  from fast `sweep_rate` settings in real-audio testing at all — plausible
+  cause identified there, not yet confirmed at the R²-training level.)
+- `filter_env_amount` (R² 0.035) — plausibly explained by the ADSR gating
+  limitation documented in the fix-round section below: the envelope is
+  gated by a ~1ms trigger pulse rather than a sustained gate, so decay and
+  sustain are never actually reached and most of this channel's intended
+  dynamic range may not be audible at all within a data-collection window.
+  This is plausible, not confirmed — the fix-round did not re-verify this
+  channel's R² after documenting the gating issue.
+- `sweep_depth` (R² 0.035) — no concrete mechanism identified beyond small
+  sample size; grouped with `vco_freq`/`vca_level`/`vcf_resonance`'s
+  explanation by default, though it wasn't a strong channel even on larger
+  datasets in the past, so this is a weaker claim than for those three.
 
 **Live control-loop verification** (`gozer run --chips 1 --who
 "claude:tt-cv-agency" -- python3 -c ...`, goal
@@ -931,14 +968,23 @@ Euclidean norm of the error: **0.222** (the loop's own
 hardware and a real running VCV Rack instance — the full pipeline
 (windowed aggregation reads, the 8-in/6-out parametric model, the
 control step, the TT inference engine) executes correctly end-to-end.
-Convergence is rough but directionally present: all three mean-features
-(loudness, brightness, pitch — dims 0/2/4) landed consistently *below*
-their 0.5 goals by a similar amount (~0.11–0.12) rather than scattered
-randomly, which looks more like a systematic undershoot from an
-undertrained model than "not being driven at all." This matches the
-smoke-test bar this task set out to clear ("the loop runs, converges even
-approximately, and nothing throws") — it does **not** demonstrate
-well-controlled convergence, and shouldn't be read as one.
+(Fix-round correction: this section previously went on to argue that the
+three mean-features landing consistently below goal by a similar amount
+"looks more like a systematic undershoot from an undertrained model than
+'not being driven at all.'" That claim doesn't actually hold up:
+`run_control_loop` calls `predict_fn(goal_features)` with the same fixed
+goal every iteration — confirmed by re-reading `control_loop.py` — so the
+model's predicted CV point is a single constant value for the entire run
+regardless of which hypothesis is true. "Three means sitting similarly
+below goal" is exactly what one fixed operating point looks like either
+way, and doesn't discriminate between "undertrained" and "not being
+driven" at all. Narrowing to what the evidence actually supports: the
+loop ran ~100 iterations against real hardware with zero exceptions, and
+the model's single predicted CV point landed at Euclidean distance ≈0.222
+from the goal.) This matches the smoke-test bar this task set out to
+clear ("the loop runs, converges even approximately, and nothing
+throws") — it does **not** demonstrate well-controlled convergence, and
+shouldn't be read as one.
 
 **Operational note (a mistake, corrected, not hidden):** the first live
 control-loop attempt was wrapped in a stray shell `timeout 200`, which
@@ -982,3 +1028,128 @@ instrument is explicitly out of scope for Stage 0 and belongs to whatever
 data-collection volume/strategy Stages 1-3 bring (Stage 2's exploration-
 driven sampling in particular is a direct candidate for doing better than
 uniform-random 300-sample coverage of an 8-dimensional space).
+
+## Stage 0 fix round (2026-09-07): consolidated review fixes
+
+A single consolidated fix pass addressing a final whole-branch review of
+Stage 0 (Tasks 1-5 above), scoped and ruled on by the controller rather
+than left open-ended. Highlights below; the rest (broken `__main__` file
+chain, an unreachable `n_samples=3000` runtime, stale docstrings/README
+text, a wiring test for the aggregation window) were smaller, more
+mechanical fixes not worth their own narrative section.
+
+### `seq_tempo`/`sweep_rate` CV range re-narrowing, and its real-audio
+re-verification
+
+The MIDI-CAT ranges Task 1 shipped for `seq_tempo` (raw `SEQ3.TEMPO_PARAM`
+`-2..4`, mapped to the module's full range) and `sweep_rate` (raw
+`LFO.FREQ_PARAM` `-6..-1`) both let a real setting produce a loop/period
+longer than `aggregate_window_s=5.0` — roughly 45% of `seq_tempo`'s range
+and about half of `sweep_rate`'s. That's the exact "one block catches a
+random instant" problem this whole stage exists to fix, recurring at a
+coarser (multi-second) grain instead of a single-audio-block one.
+
+**Fix**: re-edited `patches/sequencer_test.vcv`'s `patch.json` (module 8,
+MidiCat, `data.maps`) by the same hand-authored-JSON technique as every
+other patch edit in this project — unpacked with `tar --zstd -xf`, changed
+only the `min` fraction of the `seq_tempo` and `sweep_rate` map entries
+(diffed against the original to confirm nothing else moved), repacked with
+`tar --zstd -cf`:
+
+- `seq_tempo`: `min` `0.0 → 0.5` (raw range narrows to `1..4` — `clockFreq
+  = 2^raw` steps/s, 2 to 16, an 8-step loop period of 4s down to 0.5s).
+- `sweep_rate`: `min` `0.1111 → 0.3333` (raw range narrows to `-2..-1` —
+  `freq = 2^raw` Hz, a period of 4s down to 2s). `max` was already at the
+  `-1` end for both the old and new range, so only `min` changed for
+  either channel.
+
+**Re-verification, against a freshly relaunched `sequencer_test.vcv`**
+(killed the stale instance, appended the `"END"` log marker, relaunched —
+confirmed via the autosave that the crash-recovery dialog didn't block the
+load and the new `min` fractions took effect):
+
+- **`seq_tempo`**, slowest setting (cc=0): mean inter-onset interval
+  (detecting the sequence's `+12` semitone step via a pitch-doubling
+  threshold, 20s of live audio) — **4 consecutive full-loop intervals:
+  3.99s / 3.99s / 4.01s / 4.00s, mean 3.995s**, essentially exactly the
+  predicted 4s loop (not the old range's 32s). Cross-checked against a
+  direct raw-param read (autosave, synced to a fresh `saveAutosave` log
+  line rather than trusted on a fixed sleep) — `TEMPO_PARAM` read back as
+  exactly `1.0` at CV=0 and `4.0` at CV=1, matching the design arithmetic
+  exactly.
+- **`sweep_rate`**: raw-param read confirms the arithmetic is exactly
+  right (`FREQ_PARAM` reads `-2.0` at CV=0, `-1.0` at CV=1 — a 4s and 2s
+  period respectively, synced the same way). The intended real-audio
+  check — "does `sweep_rate`'s slowest setting still show measurably
+  lower centroid-std within a 5s window than its fastest" (the same test
+  Task 1 used) — **did not hold**: 6 alternating slow/fast trials at a 5s
+  window gave slow mean 52.0±8.7 Hz vs. fast mean 52.8±9.3 Hz (ratio
+  1.01, indistinguishable from trial noise). Investigated rather than
+  waved away, since this contradicted the expected verification outcome:
+  a control trial at a *shorter* 2s window (matching Task 1's original
+  test length, deliberately shorter than the new range's 4s slowest
+  period) reproduced Task 1's original style of discrimination cleanly
+  (slow 38.3±11.2 Hz, fast 55.0±13.5 Hz, ratio 1.44) — confirming the
+  sweep itself and the wiring are correct, and that the 5s-window
+  non-discrimination is a real, mathematically expected consequence of
+  the fix itself: once a window's duration is `≥` a periodic signal's
+  period at *both* ends of a CV range (exactly what this fix guarantees),
+  the windowed-std feature saturates to the same steady-state value
+  regardless of the exact rate, because the window always captures a full
+  swing of the modulation either way. Task 1's original std-based test
+  discriminated slow from fast specifically *because* of truncation
+  asymmetry in a too-short window relative to a very slow setting — i.e.
+  the very defect this fix removes was also, incidentally, what made that
+  particular diagnostic work. **Net read**: the range fix itself is
+  correct and verified (arithmetically exact, and no more truncated
+  windows at either end of either channel's new range) — but
+  `sweep_rate`'s windowed `[mean, std]` feature may now be structurally
+  less informative about rate than it was pre-fix, independent of sample
+  count. Worth the next data-collection round keeping an eye on this
+  channel's R² for that reason, rather than assuming more samples alone
+  will fix it.
+
+### Known limitation, deferred to Stage 1: ADSR gating via a trigger pulse,
+not a sustained gate
+
+Cable 114 (`SEQ3.TRIG_OUTPUT` → `ADSR.GATE_INPUT`) delivers only a ~1ms
+trigger pulse, not a sustained gate. `ADSR`'s configured envelope (attack
+`0.0` ≈1ms, decay `0.3` ≈15.8ms, sustain `0.1`, release `0.15` ≈4ms, per
+the module's exponential `MIN_TIME=1e-3`/`MAX_TIME=10` time mapping) never
+actually reaches decay or sustain in practice: the gate drops low again
+almost immediately after attack starts, so the envelope goes attack→release
+in roughly 5ms total rather than running its full shape. This makes
+`filter_env_amount` closer to a brief click than the "dramatic squelch
+control" the spec intended.
+
+**Not fixed now** — reopening envelope-character verification for this
+channel isn't worth it before a real use case exists to tune the shape
+against, and this fix round's scope was set by the controller, not
+reopened here on our own judgment. **Fix direction for whoever picks this
+up**: route the gate cable from `SEQ3.CLOCK_OUTPUT` (with the sequencer's
+own `data.clockPassthrough: true`) instead of `TRIG_OUTPUT`, or from a
+`STEP_OUTPUTS` slot, either of which should hold high for closer to a full
+step's duration rather than a fixed ~1ms pulse — and lengthen `ADSR`'s
+decay/release accordingly once the gate is actually sustained long enough
+for them to matter.
+
+### Task 1's real per-channel verification measurements
+
+Task 1 verified all 8 channels against real measured audio, but the
+actual numbers only ever made it into the (gitignored, uncommitted)
+`task-1-report.md`, not into this file — the following table closes that
+gap. `seq_tempo`/`sweep_rate` use this fix round's own re-verification
+numbers (above) instead of Task 1's original ones, since those two
+channels' ranges changed; every other row is Task 1's original
+measurement, unchanged and not re-taken (their ranges didn't move):
+
+| channel | measurement | result |
+|---|---|---|
+| `seq_tempo` | mean inter-onset interval at new slowest setting (cc=0, 20s live audio) | 4 consecutive full-loop intervals 3.99/3.99/4.01/4.00s, mean **3.995s** — matches the predicted 4s loop almost exactly; raw `TEMPO_PARAM` read back as exactly 1.0 (CV=0) / 4.0 (CV=1) |
+| `sweep_rate` | centroid std over a 5s window, depth=max, tempo held at its own new-slowest, 6 alternating slow/fast trials | slow mean **52.0±8.7 Hz**, fast mean **52.8±9.3 Hz** (ratio 1.01) — **not** measurably different at the production 5s window; arithmetic confirmed correct via raw `FREQ_PARAM` reads (-2.0/-1.0 as designed), and a shorter 2s window reproduces real discrimination (38.3±11.2 vs 55.0±13.5, ratio 1.44) — see the range re-narrowing section above for the full explanation |
+| `sweep_depth` | centroid std over 10s, rate fixed at cc=100 | center(cc64)=32.74 Hz, min(cc0)=44.67 Hz, max(cc127)=66.70 Hz — both extremes exceed center |
+| `filter_env_amount` | centroid std over 10s, seq_tempo=90 | center(cc64)=34.66 Hz, min(cc0)=36.62 Hz (≈noise floor), max(cc127)=179.43 Hz (~5x) — dramatic effect at max, none at min/center |
+| `vcf_resonance` | spectral flatness (dB), cc 0/32/64/96/127 | -117.09 → -118.70 → -119.87 → -119.99 → -120.29 dB, monotonically more concentrated as resonance rises |
+| `vco_freq` (re-verify vs Minimoog patch) | median pitch, cc 64/96/127 | 132.6/266.7/521.7 Hz — matches un-sequenced baseline (132.2/265.2/521.7) almost exactly. cc0/32 showed elevated readings (82.5/70.2 Hz vs expected 32.7/65.8 Hz) — root-caused via a direct raw-param read (not audio) as a pitch-estimation block-size/frequency-floor artifact at low fundamentals, not a wiring defect; a known limitation worth carrying forward, not a Stage 0 defect |
+| `vcf_cutoff` (re-verify) | rms + centroid, cc 0/32/64/96/127 | rms 0.0005→0.0016→0.0915→0.2484→0.3303, centroid 207.8→151.3→199.6→550.2→1725.5 Hz — monotonic, consistent with the Minimoog-only baseline |
+| `vca_level` (re-verify) | rms, cc 0/32/64/96/127 | 0.0000→0.0832→0.1664→0.2488→0.3296 — clean monotonic |

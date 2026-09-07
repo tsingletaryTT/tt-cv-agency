@@ -67,7 +67,7 @@ def evaluate_per_dimension(
     data it's being judged against -- an R^2 of 0.0 means "no better than
     always predicting the training-set average CV setting for this
     channel," which is the honest bar a control-loop-worthy model needs to
-    clear per channel, not just on average across all three.
+    clear per channel, not just on average across the whole CV channel set.
     """
     model.eval()
     with torch.no_grad():
@@ -87,8 +87,11 @@ def evaluate_per_dimension(
 
 def save_weights(model: InverseCVModel, path: str, channels: list[str] | None = None) -> None:
     # `channels` records the CV channel order (from backend.channels()) this
-    # model's outputs were trained against -- e.g. ["vco_freq", "vco_fm",
-    # "vca_level"]. It's optional (so existing callers/tests that only care
+    # model's outputs were trained against -- e.g. the current patch's
+    # ["vco_freq", "vcf_cutoff", "vca_level", "seq_tempo", "sweep_rate",
+    # "sweep_depth", "filter_env_amount", "vcf_resonance"], or whatever
+    # channel set a different patch's config defines. It's optional (so
+    # existing callers/tests that only care
     # about the weight arrays keep working unchanged), but any real training
     # run should pass it: without it, nothing stops the model's output
     # vector being applied to CV channels in the wrong order at inference
@@ -108,7 +111,10 @@ def save_weights(model: InverseCVModel, path: str, channels: list[str] | None = 
 
 
 if __name__ == "__main__":
-    data = np.load("data/sweep_dataset.npz")
+    # data/sequencer_sweep_dataset.npz -- written by data_collection.py's own
+    # __main__ (the current, 8-channel Stage 0 patch's dataset), not the
+    # retired 3-channel data/sweep_dataset.npz name.
+    data = np.load("data/sequencer_sweep_dataset.npz")
     channels = data["channels"].tolist()
 
     (cv_train, feat_train), (cv_val, feat_val) = train_val_split(
@@ -124,5 +130,8 @@ if __name__ == "__main__":
     for ch, mse, r2 in zip(channels, mse_per_dim, r2_per_dim):
         print(f"{ch:<12} {mse:>10.4f} {r2:>10.4f}")
 
-    save_weights(model, "data/model_weights.npz", channels=channels)
-    print("saved trained weights to data/model_weights.npz")
+    # sequencer_model_weights.npz -- the name control_loop.py's __main__
+    # actually reads; keeping these two in sync is the other half of the
+    # __main__ chain fix (data_collection.py -> model.py -> control_loop.py).
+    save_weights(model, "data/sequencer_model_weights.npz", channels=channels)
+    print("saved trained weights to data/sequencer_model_weights.npz")

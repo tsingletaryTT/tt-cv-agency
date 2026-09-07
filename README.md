@@ -60,7 +60,11 @@ random CV sweep against the real running patch (500 samples); a small
 inverse-regression model (3→32→32→3, ReLU) fit to that data; `TTInferenceEngine`
 running that model's weights on a real Tenstorrent chip via `ttnn`; and
 `run_control_loop` closing the loop (read audio → extract features → infer CV
-→ write CV → repeat) against the live patch.
+→ write CV → repeat) against the live patch. (Since Stage 0 — see
+`CLAUDE.md` — this per-instant 3-feature read has been replaced by a windowed
+6-feature `[mean, std]` aggregation over a whole loop/period, feeding a
+patch-agnostic model sized to whatever `(n_features, n_channels)` the current
+patch and config define, not a fixed `3→32→32→3`.)
 
 A final whole-branch review found and fixed a genuine bug in
 `estimate_pitch`: at the real production `block_size` (1024 samples), its
@@ -158,17 +162,28 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   a real, always-effective brightness control. See `CLAUDE.md` for the
   full design, the module-source verification, and a real tracking bug
   this uncovered and fixed along the way.
-- `configs/bridge_test.yaml` / `configs/minimoog_test.yaml` — channel → MIDI
-  CC mapping for each patch, so no channel identity or CC number is
-  hardcoded in Python.
+- `patches/sequencer_test.vcv` — Stage 0's temporal instrument: the Minimoog
+  patch extended with a self-clocked `SEQ3` sequencer, a filter-sweep `LFO`,
+  and a filter-envelope `ADSR`, 8 MIDI-CAT channels total. See CLAUDE.md's
+  Stage 0 sections for the full design and verification.
+- `configs/bridge_test.yaml` / `configs/minimoog_test.yaml` /
+  `configs/sequencer_test.yaml` — channel → MIDI CC mapping for each patch,
+  so no channel identity or CC number is hardcoded in Python.
 - `features.py` — loudness (RMS), brightness (spectral centroid), and pitch
-  (autocorrelation) feature extraction, each normalized to roughly `[0, 1]`.
+  (autocorrelation) feature extraction, each normalized to roughly `[0, 1]`;
+  `extract_features_aggregated` reduces a whole window of blocks to a 6-dim
+  `[mean, std]` per feature, so a windowed read of a looping/temporal patch
+  (like `sequencer_test.vcv`) isn't reduced to one random instantaneous
+  block.
 - `data_collection.py` — sweeps random CV settings against a `CVBackend` and
-  logs the resulting `(cv, features)` pairs for training data.
-- `model.py` — `InverseCVModel` (a tiny feedforward regressor mapping target
-  features back to the CV settings that should produce them), its PyTorch
-  training script (with an 80/20 train/val split and per-channel MSE/R²
-  reporting), and `save_weights`/channel-order provenance.
+  logs the resulting `(cv, features)` pairs for training data; each sample
+  reads a whole `aggregate_window_s`-long window of audio (not a single
+  block) so temporal patches are represented fairly.
+- `model.py` — `InverseCVModel` (a small feedforward regressor, parametric in
+  both input-feature and output-CV-channel count, mapping target features
+  back to the CV settings that should produce them), its PyTorch training
+  script (with an 80/20 train/val split and per-channel MSE/R² reporting),
+  and `save_weights`/channel-order provenance.
 - `tt_inference.py` — `TTInferenceEngine`: loads the trained weights and runs
   the model's forward pass on a real Tenstorrent chip via `ttnn` (always
   behind a `gozer` chip lease). Asserts the loaded weights' recorded CV

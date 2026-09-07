@@ -77,3 +77,49 @@ def test_control_loop_history_entries_are_six_dimensional():
     assert len(history) == 3
     for entry in history:
         assert entry.shape == (6,)
+
+
+class TimeVaryingFakeBackend(FakeCVBackend):
+    """Unlike LinearFakeBackend above (whose read_audio_block() output is
+    constant for any fixed CV, since it's a deterministic function of
+    current CV only), this one's output genuinely differs from call to
+    call regardless of CV -- alternating between two distinct waveforms
+    (different amplitude AND frequency, so loudness, brightness, and pitch
+    all vary within a single window, not just one of the three).
+
+    Every existing test of run_control_loop uses a backend whose block is
+    constant within a window, so all 3 "std" dimensions of the aggregated
+    feature vector are trivially 0.0 in every one of them -- a bug that
+    collapsed the windowed block-reading loop (e.g. reading the same block
+    N times instead of N genuinely distinct reads) would leave the whole
+    existing test suite green. Only a time-varying backend like this one
+    can catch that."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._call_count = 0
+
+    def read_audio_block(self) -> np.ndarray:
+        self._call_count += 1
+        t = np.arange(2048) / 48000.0
+        if self._call_count % 2 == 0:
+            return (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        else:
+            return (0.1 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+
+
+def test_control_loop_std_columns_nonzero_with_time_varying_audio():
+    backend = TimeVaryingFakeBackend(channel_names=["vco_freq", "vco_fm", "vca_level"])
+    goal = np.array([0.5, 0.0, 0.5, 0.0, 0.5, 0.0])
+    history = run_control_loop(
+        backend, predict_fn=fake_predict, goal_features=goal, sample_rate=48000,
+        control_interval_s=0.0, max_iterations=2, convergence_threshold=-1.0,
+        # aggregate_window_s=0.5 -> tens of blocks per window, so both
+        # waveforms in the alternating pattern above are actually captured.
+        aggregate_window_s=0.5,
+    )
+    # Columns 1, 3, 5 are std(loudness), std(brightness), std(pitch_norm)
+    # per extract_features_aggregated's documented ordering -- a collapsed
+    # block-reading loop would leave these at exactly 0.0 in every entry.
+    for entry in history:
+        assert entry[1] > 0.0 and entry[3] > 0.0 and entry[5] > 0.0

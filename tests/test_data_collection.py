@@ -56,3 +56,49 @@ def test_collect_sweep_dataset_reads_multiple_blocks_per_sample():
         aggregate_window_s=0.1,
     )
     assert backend.read_audio_block_calls > n_samples
+
+
+class TimeVaryingFakeBackend(FakeCVBackend):
+    """Unlike every other fake backend in this test file (and
+    CountingFakeBackend above), which returns the exact same constant block
+    on every read_audio_block() call, this one's output genuinely differs
+    from call to call -- alternating between two distinct waveforms (both a
+    different amplitude AND a different frequency, so loudness, brightness,
+    and pitch all vary, not just one of the three).
+
+    This matters because every existing test of collect_sweep_dataset uses
+    a constant-block backend, which means all 3 "std" dimensions of
+    extract_features_aggregated's 6-dim output are trivially 0.0 in every
+    one of them -- a bug that collapsed the windowed block-reading loop
+    (e.g. reading the same block N times instead of N genuinely distinct
+    reads) would leave the whole existing test suite green. Only a
+    time-varying backend like this one can catch that."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._call_count = 0
+
+    def read_audio_block(self) -> np.ndarray:
+        self._call_count += 1
+        t = np.arange(2048) / 48000.0
+        if self._call_count % 2 == 0:
+            return (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        else:
+            return (0.1 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+
+
+def test_collect_sweep_dataset_std_columns_nonzero_with_time_varying_audio():
+    backend = TimeVaryingFakeBackend(channel_names=["a", "b", "c"])
+    rng = np.random.default_rng(seed=3)
+    # aggregate_window_s=0.5 -> tens of blocks per window at the fake's
+    # default block_size(), so both waveforms in the alternating pattern
+    # above are actually captured within each sample's window.
+    cv_array, feature_array = collect_sweep_dataset(
+        backend, n_samples=4, settle_time_s=0.0, sample_rate=48000, rng=rng,
+        aggregate_window_s=0.5,
+    )
+    # Columns 1, 3, 5 are std(loudness), std(brightness), std(pitch_norm)
+    # per extract_features_aggregated's documented ordering -- a collapsed
+    # block-reading loop (reading the same block repeatedly instead of
+    # genuinely distinct ones) would leave these at exactly 0.0.
+    assert np.all(feature_array[:, [1, 3, 5]] > 0.0)

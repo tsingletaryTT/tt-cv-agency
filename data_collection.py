@@ -64,13 +64,26 @@ if __name__ == "__main__":
         # observed in Phase 1's round-trip verification (RMS transitions completed
         # within a few hundred ms); re-check with a stopwatch-style manual test
         # (Task 3 Step 6's pattern) if this dataset's model behaves oddly.
+        #
+        # n_samples=300 -- what Task 5 actually collected and verified
+        # end-to-end against this patch. Before the windowed aggregate_window_s
+        # read was added, a much larger n_samples (e.g. 3000) took ~25 minutes
+        # at settle_time_s=0.5 alone; now every sample also reads a full
+        # aggregate_window_s=5.0 window, so total runtime is roughly
+        # n_samples * (settle_time_s + aggregate_window_s) seconds -- 3000
+        # samples would now take close to 4.6 hours. Bump this deliberately,
+        # with that arithmetic in mind, not by habit.
         cv_array, feature_array = collect_sweep_dataset(
-            backend, n_samples=3000, settle_time_s=0.5, rng=rng
+            backend, n_samples=300, settle_time_s=0.5, rng=rng
         )
         import os
         os.makedirs("data", exist_ok=True)
-        np.savez("data/sweep_dataset.npz", cv=cv_array, features=feature_array, channels=backend.channels())
-        print(f"saved {len(cv_array)} samples to data/sweep_dataset.npz")
+        # sequencer_sweep_dataset.npz (not the old sweep_dataset.npz name --
+        # that was the retired 3-channel dataset's filename, and model.py's
+        # __main__ now reads this same name so the two scripts form a real
+        # chain again).
+        np.savez("data/sequencer_sweep_dataset.npz", cv=cv_array, features=feature_array, channels=backend.channels())
+        print(f"saved {len(cv_array)} samples to data/sequencer_sweep_dataset.npz")
     finally:
         # A crash partway through a several-minute collection run must not
         # leave the audio stream / MIDI port open -- close it even if the

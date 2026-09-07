@@ -90,6 +90,20 @@ def extract_features(block: np.ndarray, sample_rate: int) -> np.ndarray:
 
 
 def extract_features_aggregated(blocks: list[np.ndarray], sample_rate: int) -> np.ndarray:
+    """Reduce a whole window of audio blocks to a fixed 6-dim feature vector,
+    ordered exactly:
+
+        [mean(loudness), std(loudness), mean(brightness), std(brightness),
+         mean(pitch_norm), std(pitch_norm)]
+
+    i.e. each of `extract_features`'s three per-block dimensions (loudness,
+    brightness, pitch_norm, in that order) contributes a mean and a std,
+    interleaved as [mean0, std0, mean1, std1, mean2, std2] rather than
+    [mean0, mean1, mean2, std0, std1, std2]. `control_loop.py`,
+    `data_collection.py`, and multiple tests all depend on this exact
+    ordering -- changing it is a breaking change for every `goal_features`/
+    `feature_array` consumer, not just this function's own return value.
+    """
     per_block = np.array([extract_features(block, sample_rate) for block in blocks])
     means = per_block.mean(axis=0)
     stds = per_block.std(axis=0)
