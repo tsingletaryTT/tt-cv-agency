@@ -954,6 +954,14 @@ manual `tt-smi -r` was needed. The corrected re-run (no external
 `timeout` wrapper, just the plain `gozer run ... -- python3 ...`
 backgrounded and polled) is the run reported above.
 
+(This paragraph was originally written as a narrative claim with no
+pasted `gozer status` output — a real gap the task review caught: a
+hardware-safety-adjacent claim should be independently checkable, not
+just described. Confirming evidence, checked directly after that
+review: `gozer status` now shows all 4 chips `FREE` — `0000:01:00.0`,
+`0000:02:00.0`, `0000:03:00.0`, `0000:04:00.0` — consistent with the
+self-resolution claim and with no lingering lease from this incident.)
+
 **Full test suite**, per the plan's own stated bar for Stage 0 being
 done: `python3 -m pytest -q` → **44 passed, 4 deselected**; `gozer run
 --chips 1 --who "claude:tt-cv-agency" --reason "final Stage 0 suite
