@@ -1,22 +1,8 @@
 import anthropic
 
 from instruction_parser.base import InstructionParser, RecipeParseError
+from instruction_parser.prompts import build_system_prompt
 from instruction_parser.schema import build_recipe_model
-
-SYSTEM_PREAMBLE = (
-    "You control a modular synthesizer via a set of continuous CV "
-    "(control voltage) channels, each in the range [0, 1]. Given an "
-    "instruction describing a desired sound, choose a value for every "
-    "channel listed below to best match the instruction. Channels and "
-    "what each one controls:\n"
-)
-
-
-def _build_system_prompt(channels: dict[str, str]) -> str:
-    lines = [SYSTEM_PREAMBLE]
-    for name, description in channels.items():
-        lines.append(f"- {name}: {description}")
-    return "\n".join(lines)
 
 
 class AnthropicInstructionParser(InstructionParser):
@@ -30,7 +16,7 @@ class AnthropicInstructionParser(InstructionParser):
             response = client.messages.parse(
                 model=self._model,
                 max_tokens=1024,
-                system=_build_system_prompt(channels),
+                system=build_system_prompt(channels),
                 messages=[{"role": "user", "content": instruction}],
                 output_format=recipe_model,
             )
