@@ -52,3 +52,61 @@ def test_parse_recipe_raises_on_malformed_local_model_output():
         )
         with pytest.raises(RecipeParseError):
             parser.parse_recipe("make it deep and quiet", CHANNELS)
+
+
+def test_parse_recipe_raises_recipe_parse_error_on_empty_choices():
+    # A real, non-hypothetical local-server failure mode: an empty
+    # `choices` list (e.g. a refusal at the transport level). Must surface
+    # as RecipeParseError, not a raw IndexError.
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        response = MagicMock()
+        response.choices = []
+        mock_client.chat.completions.create.return_value = response
+        with pytest.raises(RecipeParseError):
+            parser.parse_recipe("make it deep and quiet", CHANNELS)
+
+
+def test_parse_recipe_raises_recipe_parse_error_on_none_content():
+    # Another real, non-hypothetical case: a tool_calls-only message or an
+    # empty completion leaves message.content as None (openai's own
+    # ChatCompletionMessage.content is typed Optional[str]). Must surface
+    # as RecipeParseError, not a raw TypeError from json.loads(None).
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None), finish_reason="tool_calls")]
+        mock_client.chat.completions.create.return_value = response
+        with pytest.raises(RecipeParseError):
+            parser.parse_recipe("make it deep and quiet", CHANNELS)
+
+
+def test_parse_recipe_sends_correct_json_schema_for_varying_channel_counts():
+    for channels in ({"a": "desc a", "b": "desc b"}, {f"ch{i}": f"description {i}" for i in range(8)}):
+        parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+        with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+            mock_client = MockClient.return_value
+            recipe = {name: 0.5 for name in channels}
+            mock_client.chat.completions.create.return_value = _mock_chat_response(json.dumps(recipe))
+            parser.parse_recipe("anything", channels)
+        _, call_kwargs = mock_client.chat.completions.create.call_args
+        schema = call_kwargs["response_format"]["json_schema"]["schema"]
+        assert set(schema["properties"].keys()) == set(channels.keys())
+        assert set(schema["required"]) == set(channels.keys())
+
+
+def test_parse_recipe_includes_channel_descriptions_in_system_message():
+    channels = {"vco_freq": "pitch control", "vca_level": "loudness control"}
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.chat.completions.create.return_value = _mock_chat_response(
+            json.dumps({"vco_freq": 0.5, "vca_level": 0.5})
+        )
+        parser.parse_recipe("anything", channels)
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    system_message = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "system")
+    assert "pitch control" in system_message
+    assert "loudness control" in system_message

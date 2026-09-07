@@ -37,13 +37,35 @@ class LocalInstructionParser(InstructionParser):
                     {"role": "system", "content": build_system_prompt(channels)},
                     {"role": "user", "content": instruction},
                 ],
+                # "strict" is deliberately NOT set on the json_schema envelope
+                # below -- support for it is uneven across OpenAI-compatible
+                # servers (vLLM/Ollama/llama.cpp server/LM Studio), so schema
+                # conformance is enforced downstream by validate_recipe_json
+                # instead of relied upon here.
                 response_format={
                     "type": "json_schema",
                     "json_schema": {"name": "cv_recipe", "schema": _build_json_schema(channels)},
                 },
+                # Parity with AnthropicInstructionParser's max_tokens=1024 --
+                # guards against a local server truncating the JSON response,
+                # which would otherwise surface as an unhelpful generic "not
+                # valid JSON" error instead of hinting at truncation.
+                max_tokens=1024,
             )
         except Exception as e:
             raise RecipeParseError(f"local model API call failed: {e}") from e
+
+        if not response.choices or response.choices[0].message.content is None:
+            # A real, non-hypothetical failure mode for a local server: a
+            # refusal, a tool_calls-only message, or an empty completion all
+            # leave no usable text here (openai's own ChatCompletionMessage.
+            # content is typed Optional[str]). Surface this as the same
+            # RecipeParseError the InstructionParser interface promises,
+            # instead of an IndexError/TypeError leaking out of this method.
+            finish_reason = response.choices[0].finish_reason if response.choices else None
+            raise RecipeParseError(
+                f"local model returned no usable message content (finish_reason={finish_reason!r})"
+            )
 
         content = response.choices[0].message.content
         # Local servers vary widely in how strictly they honor a requested

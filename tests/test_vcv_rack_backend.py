@@ -1,5 +1,6 @@
 # tests/test_vcv_rack_backend.py
 import queue
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
@@ -125,8 +126,11 @@ def test_callback_keeps_only_latest_block_in_bounded_queue(mock_open_output, moc
 
 def test_load_channel_config_returns_descriptions():
     from backends.vcv_rack import load_channel_config
-    # Use an existing fixture config or write a small temp YAML inline via tmp_path
-    midi_port, channel_cc, descriptions = load_channel_config("configs/sequencer_test.yaml")
+    # Path relative to this test file, not the process cwd -- pytest can be
+    # invoked from any directory (e.g. /tmp), and a bare relative path would
+    # silently fail to resolve there.
+    config_path = Path(__file__).parent.parent / "configs" / "sequencer_test.yaml"
+    _, channel_cc, descriptions = load_channel_config(str(config_path))
     assert descriptions["vco_freq"] == "Base pitch of the bass voice. Low = deep bass, high = higher register."
     assert set(descriptions.keys()) == set(channel_cc.keys())
 

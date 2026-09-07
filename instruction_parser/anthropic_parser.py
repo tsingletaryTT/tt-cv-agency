@@ -33,4 +33,8 @@ class AnthropicInstructionParser(InstructionParser):
             )
 
         parsed = response.parsed_output.model_dump()
+        # Deliberately no validate_recipe_json call here, unlike the local
+        # path: client.messages.parse's own output_format enforcement already
+        # validates range/required-keys before parsed_output is ever
+        # populated, so re-validating would be redundant.
         return {name: parsed[name] for name in channels}

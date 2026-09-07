@@ -169,7 +169,7 @@ garbage."
 ### Recipe application + verification script
 
 `instruction_to_preset.py`, CLI: an instruction string (positional arg)
-plus flags choosing the parser (`--parser anthropic|local`, `--model`,
+plus flags choosing the parser (`--llm anthropic|local`, `--model`,
 `--base-url` for local) and the backend config (`--config
 configs/sequencer_test.yaml`, defaulting to the current Stage 0 patch).
 Steps: build the chosen `InstructionParser`, call `parse_recipe` with

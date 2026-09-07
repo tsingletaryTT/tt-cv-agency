@@ -18,7 +18,12 @@ def main():
     parser.add_argument("instruction", help="e.g. 'make a squelchy resonant acid bass'")
     parser.add_argument("--config", default="configs/sequencer_test.yaml")
     parser.add_argument("--llm", choices=["anthropic", "local"], default="anthropic")
-    parser.add_argument("--model", default=None, help="model name/ID; provider-specific default if omitted")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="model name/ID; defaults to claude-opus-5 for --llm anthropic, "
+        "required (no default) for --llm local",
+    )
     parser.add_argument("--base-url", default=None, help="required for --llm local")
     parser.add_argument("--settle-time-s", type=float, default=1.0)
     parser.add_argument("--aggregate-window-s", type=float, default=5.0)
@@ -27,8 +32,8 @@ def main():
     if args.llm == "anthropic":
         instruction_parser = AnthropicInstructionParser(model=args.model or "claude-opus-5")
     else:
-        if not args.base_url:
-            parser.error("--base-url is required when --llm local")
+        if not args.base_url or not args.model:
+            parser.error("--base-url and --model are required when --llm local")
         instruction_parser = LocalInstructionParser(base_url=args.base_url, model=args.model)
 
     backend = VCVRackBackend(args.config)

@@ -193,6 +193,22 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
 - `control_loop.py` — `run_control_loop`: the perceive-decide-act loop itself
   (read audio → extract features → infer target CV → step toward it → write
   CV → repeat) against any `CVBackend`.
+- `instruction_parser/` — Stage 1's LLM-agnostic instruction-to-recipe
+  abstraction: `base.py` (the `InstructionParser` abstract interface and
+  `RecipeParseError`), `schema.py` (shared per-call Pydantic recipe model +
+  JSON validation), `prompts.py` (the shared system-prompt builder),
+  `anthropic_parser.py` (`AnthropicInstructionParser`, via
+  `client.messages.parse`), and `local_parser.py`
+  (`LocalInstructionParser`, any OpenAI-compatible server via the `openai`
+  SDK). Neither parser implementation hardcodes a channel list/count/name —
+  both build their schema/prompt from whatever `channels` dict is passed at
+  call time.
+- `instruction_to_preset.py` — Stage 1's capstone CLI: parses a
+  natural-language instruction into a CV recipe via a chosen
+  `InstructionParser` (`--llm anthropic|local`), applies it to the running
+  patch, and reports the measured audio profile. No automated pass/fail
+  grading — this is a report for a human to judge against what they asked
+  for.
 - `pyproject.toml` — pytest config; registers the `hardware` marker so tests
   that touch `ttnn` are skipped by default and only run explicitly, under a
   `gozer` lease.
@@ -237,8 +253,8 @@ turned out to be most of the actual work. Highlights (full detail in
 ## Requirements
 
 Python 3.12, `torch`, `ttnn` (from a `tt-metal` checkout), `mido`,
-`sounddevice`, `numpy`, `scipy`, `PyYAML`, `pytest`, `pydantic`, `anthropic`.
-VCV Rack (free edition) is
+`sounddevice`, `numpy`, `scipy`, `PyYAML`, `pytest`, `pydantic`, `anthropic`,
+`openai`. VCV Rack (free edition) is
 the current test instrument, with the [MIDI-CAT](https://github.com/stoermelder/vcvrack-packone)
 module mapped to the patch's CV-controllable parameters over a MIDI loopback
 port.

@@ -1154,8 +1154,7 @@ measurement, unchanged and not re-taken (their ranges didn't move):
 | `vcf_cutoff` (re-verify) | rms + centroid, cc 0/32/64/96/127 | rms 0.0005→0.0016→0.0915→0.2484→0.3303, centroid 207.8→151.3→199.6→550.2→1725.5 Hz — monotonic, consistent with the Minimoog-only baseline |
 | `vca_level` (re-verify) | rms, cc 0/32/64/96/127 | 0.0000→0.0832→0.1664→0.2488→0.3296 — clean monotonic |
 
-## Stage 1 Task 6 (2026-09-07): `instruction_to_preset.py` capstone script, and
-an explicit gap — it has never actually talked to an LLM
+## Stage 1 Task 6 (2026-09-07): `instruction_to_preset.py` capstone script, and an explicit gap — it has never actually talked to an LLM
 
 Stage 1 (Tasks 1-5, all merged to `main`) built a shared windowed-audio-read
 helper (`features.read_aggregated_window`), per-channel descriptions on
@@ -1172,11 +1171,11 @@ out over MIDI via `backend.set_cv`, let the patch settle, then read real
 audio back via `features.read_aggregated_window` and print the recipe plus
 the measured `[mean, std] x [loudness, brightness, pitch]` vector.
 
-**What's verified**: every module the script imports from was read fresh
-against its actual current source (not just the plan's transcription)
-before writing this script, and `python3 instruction_to_preset.py --help`
-runs clean — confirming the whole import chain (`backends.vcv_rack`,
-`features`, `instruction_parser.anthropic_parser`,
+**What's verified**: the cross-module wiring was checked before writing this
+script — most modules it imports from were read fresh against their actual
+current source (not just the plan's transcription) — and `python3
+instruction_to_preset.py --help` runs clean, confirming the whole import
+chain (`backends.vcv_rack`, `features`, `instruction_parser.anthropic_parser`,
 `instruction_parser.local_parser`, and transitively `instruction_parser.
 {base,prompts,schema}`) resolves with no stale import path left over from
 Task 5's relocation of the system-prompt builder into
@@ -1185,7 +1184,12 @@ Task 5's relocation of the system-prompt builder into
 `--aggregate-window-s`) is well-formed. All of Stage 1's parsing/validation
 logic is unit-tested against mocked LLM responses (`tests/` — recipe schema
 validation, malformed-JSON/out-of-range/missing-channel error paths, both
-parsers' request-building).
+parsers' request-building). This diligence was not exhaustive, though: a
+final whole-branch review found that `local_parser.py` specifically had not
+been re-read closely enough to catch a real `--llm local` without `--model`
+gap (the CLI let `model=None` reach `LocalInstructionParser`, which requires
+it with no default) — four of five modules got the fresh-read treatment
+this claim describes, not all five.
 
 **What's explicitly NOT verified — a real gap, not an oversight**: this
 script has never been run end-to-end against a real LLM. This machine
@@ -1206,8 +1210,10 @@ to point `--base-url` at. That means:
 **To close this gap**, whoever picks this up next needs either: an
 `ANTHROPIC_API_KEY` env var (or an `ant auth login` profile) to run
 `python3 instruction_to_preset.py "<instruction>" --llm anthropic`, or a
-running OpenAI-compatible local server plus its `--base-url` (and usually
-`--model`) to run with `--llm local`. Closing it is the natural next step
+running OpenAI-compatible local server plus its `--base-url` (and, always,
+`--model` — `LocalInstructionParser` has no default model and the CLI
+requires both together) to run with `--llm local`. Closing it is the
+natural next step
 the moment either becomes available — this section exists so that step is
 remembered as outstanding, not assumed already done because the code
 merged and the tests are green.
