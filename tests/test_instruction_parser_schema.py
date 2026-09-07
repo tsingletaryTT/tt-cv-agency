@@ -35,6 +35,15 @@ def test_validate_recipe_json_rejects_missing_channel():
     with pytest.raises(RecipeParseError):
         validate_recipe_json(raw, CHANNELS)
 
+def test_validate_recipe_json_rejects_extra_channel():
+    # The interface's "no more, no fewer" contract has two halves -- this
+    # covers the half (extra/unexpected keys) that had no test despite the
+    # underlying extra="forbid" enforcement already being correct (caught
+    # in Task 3's review as a coverage gap, not a behavior defect).
+    raw = json.dumps({"vco_freq": 0.5, "vca_level": 0.5, "extra_key": 0.1})
+    with pytest.raises(RecipeParseError):
+        validate_recipe_json(raw, CHANNELS)
+
 def test_build_recipe_model_works_for_different_channel_counts():
     # Confirms neither the schema builder nor the validator has a hidden
     # assumption about a fixed (e.g. 8-channel) set.
