@@ -121,6 +121,23 @@ achievable spectral-centroid distribution is heavily skewed toward low
 values). Full numbers and the complete honest read are in `CLAUDE.md`'s
 "MIDI-CAT mappings were never actually committed" section.
 
+**Instrument upgrade:** built `patches/minimoog_test.vcv`, a proper
+Minimoog-equivalent (3 detuned VCOs → mixer → filter → amp) to replace the
+single-oscillator test patch as the foundation for future experiments —
+see "Minimoog-equivalent patch" in `CLAUDE.md` for the design and a real
+oscillator-tracking bug caught and fixed along the way.
+
+![Minimoog-equivalent patch](docs/journal/2026-09-07-minimoog-patch.png)
+
+## Progress journal
+
+`docs/journal/` holds dated screenshots of the patch as it's evolved —
+a quick visual record alongside the prose history in `CLAUDE.md`.
+
+| date | screenshot |
+|---|---|
+| 2026-09-07 | [Minimoog-equivalent patch](docs/journal/2026-09-07-minimoog-patch.png) — 3xVCO → Mixer → VCF → VCA, MIDI-CAT mapping vco_freq/vcf_cutoff/vca_level |
+
 ## What's here
 
 - `backends/base.py` — the `CVBackend` abstract interface (`set_cv`,

@@ -767,3 +767,20 @@ patch-agnostic (reads `configs/*.yaml` + whatever `.vcv` is currently
 running) so pointing them at this new patch needs no code changes —
 just launch `minimoog_test.vcv` and pass `configs/minimoog_test.yaml`
 instead of the bridge_test files.
+
+## Convention: `docs/journal/` — a screenshot record alongside this log
+
+Started 2026-09-07, when the Minimoog patch's launch screenshot turned
+out worth keeping around rather than just living in `/tmp` for one
+turn. Going forward: any screenshot taken to verify or show off patch
+state (a new instrument, a rewiring, a UI state worth remembering) gets
+saved to `docs/journal/YYYY-MM-DD-short-description.png` (matching this
+file's own dated-section style) and linked from `README.md`'s "Progress
+journal" table, newest entry at the bottom. This is a visual companion
+to the prose history here, not a replacement — keep writing the "what
+happened and why" narrative in this file the way it's always been
+done; the screenshot is the "what it looked like" that prose alone
+doesn't capture well. Not every screenshot taken during a session needs
+keeping (a debugging zoom-crop of one widget isn't journal-worthy) —
+save the ones that show real patch/instrument state, the way the
+Minimoog screenshot showed the whole signal chain at once.
