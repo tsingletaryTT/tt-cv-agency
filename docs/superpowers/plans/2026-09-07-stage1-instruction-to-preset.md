@@ -366,9 +366,18 @@ git commit -m "Add InstructionParser interface and shared recipe schema/validati
 - Consumes: `InstructionParser` (Task 3), `build_recipe_model`/`RecipeParseError` (Task 3).
 - Produces: `AnthropicInstructionParser(model: str = "claude-opus-5")`, implementing `parse_recipe`.
 
-Requires `pip install anthropic` (not yet installed on this machine — install it as part of this task, and add it to `README.md`'s Requirements line alongside the existing prose dependency list, matching this project's existing convention of listing dependencies in prose rather than a manifest file).
+Requires `pip install anthropic` (not yet installed on this machine).
 
-- [ ] **Step 1: Write the failing tests (mocked client, no live API call)**
+- [ ] **Step 1: Install the `anthropic` package**
+
+```bash
+pip install anthropic
+python3 -c "import anthropic; print(anthropic.__version__)"
+```
+
+Do this first — `instruction_parser/anthropic_parser.py` (Step 3) imports `anthropic` at module level, so the test file added in Step 2 below can't even be collected without it installed. Also add `anthropic` to `README.md`'s Requirements line alongside the existing prose dependency list, matching this project's existing convention of listing dependencies in prose rather than a manifest file.
+
+- [ ] **Step 2: Write the failing tests (mocked client, no live API call)**
 
 ```python
 # tests/test_anthropic_instruction_parser.py
@@ -427,12 +436,12 @@ def test_parse_recipe_includes_channel_descriptions_in_system_prompt():
     assert "loudness" in kwargs["system"]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 3: Run tests to verify they fail**
 
 Run: `python3 -m pytest tests/test_anthropic_instruction_parser.py -v`
 Expected: FAIL (`instruction_parser.anthropic_parser` doesn't exist).
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement**
 
 ```python
 # instruction_parser/anthropic_parser.py
@@ -490,15 +499,14 @@ class AnthropicInstructionParser(InstructionParser):
 
 (Check the `claude-api` skill's Python README/tool-use docs again while implementing this task — `client.messages.parse`'s exact keyword arguments and `response.parsed_output`'s exact shape are documented there; don't rely on this brief's transcription alone if something doesn't match. Also add a test alongside Task 4's Step 1 tests confirming a `None` `parsed_output` raises `RecipeParseError` rather than an `AttributeError` — mock `response.parsed_output = None` and `response.stop_reason = "refusal"`.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python3 -m pytest tests/test_anthropic_instruction_parser.py -v`
 Expected: all PASS. No live API call is made anywhere in this test file — confirm by running with no `ANTHROPIC_API_KEY` set and no network access assumed.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-pip install anthropic
 git add instruction_parser/anthropic_parser.py tests/test_anthropic_instruction_parser.py README.md
 git commit -m "Add AnthropicInstructionParser"
 ```
