@@ -100,5 +100,13 @@ def test_collect_sweep_dataset_std_columns_nonzero_with_time_varying_audio():
     # Columns 1, 3, 5 are std(loudness), std(brightness), std(pitch_norm)
     # per extract_features_aggregated's documented ordering -- a collapsed
     # block-reading loop (reading the same block repeatedly instead of
-    # genuinely distinct ones) would leave these at exactly 0.0.
-    assert np.all(feature_array[:, [1, 3, 5]] > 0.0)
+    # genuinely distinct ones) would leave these near zero. Threshold is
+    # 1e-6, not 0.0: identical float64 rows still produce a std on the
+    # order of 1e-16-1e-18 from floating-point rounding, which satisfies
+    # "> 0.0" even when the loop is genuinely collapsed -- confirmed by
+    # reproducing the collapse bug directly against this fake backend
+    # during this project's own review of this test. 1e-6 is far above
+    # that noise floor and far below the real variation this fixture
+    # produces (order 0.01-0.1+, given a 3x amplitude / 4x frequency
+    # swing between the two alternating waveforms).
+    assert np.all(feature_array[:, [1, 3, 5]] > 1e-6)

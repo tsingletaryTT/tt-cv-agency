@@ -120,6 +120,13 @@ def test_control_loop_std_columns_nonzero_with_time_varying_audio():
     )
     # Columns 1, 3, 5 are std(loudness), std(brightness), std(pitch_norm)
     # per extract_features_aggregated's documented ordering -- a collapsed
-    # block-reading loop would leave these at exactly 0.0 in every entry.
+    # block-reading loop would leave these near zero. Threshold is 1e-6,
+    # not 0.0: identical float64 rows still produce a std on the order of
+    # 1e-16-1e-18 from floating-point rounding, which satisfies "> 0.0"
+    # even when the loop is genuinely collapsed -- confirmed by
+    # reproducing the collapse bug directly against this fake backend
+    # during this project's own review of this test. 1e-6 is far above
+    # that noise floor and far below the real variation this fixture
+    # produces.
     for entry in history:
-        assert entry[1] > 0.0 and entry[3] > 0.0 and entry[5] > 0.0
+        assert entry[1] > 1e-6 and entry[3] > 1e-6 and entry[5] > 1e-6

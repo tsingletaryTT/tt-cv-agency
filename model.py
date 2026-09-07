@@ -91,10 +91,10 @@ def save_weights(model: InverseCVModel, path: str, channels: list[str] | None = 
     # ["vco_freq", "vcf_cutoff", "vca_level", "seq_tempo", "sweep_rate",
     # "sweep_depth", "filter_env_amount", "vcf_resonance"], or whatever
     # channel set a different patch's config defines. It's optional (so
-    # existing callers/tests that only care
-    # about the weight arrays keep working unchanged), but any real training
-    # run should pass it: without it, nothing stops the model's output
-    # vector being applied to CV channels in the wrong order at inference
+    # existing callers/tests that only care about the weight arrays keep
+    # working unchanged), but any real training run should pass it:
+    # without it, nothing stops the model's output vector being applied
+    # to CV channels in the wrong order at inference
     # time, a silent-wrong-channel failure mode that would look like a
     # working-but-wrong control loop rather than an error.
     extra = {"channels": np.array(channels)} if channels is not None else {}
