@@ -237,7 +237,8 @@ turned out to be most of the actual work. Highlights (full detail in
 ## Requirements
 
 Python 3.12, `torch`, `ttnn` (from a `tt-metal` checkout), `mido`,
-`sounddevice`, `numpy`, `scipy`, `PyYAML`, `pytest`. VCV Rack (free edition) is
+`sounddevice`, `numpy`, `scipy`, `PyYAML`, `pytest`, `pydantic`, `anthropic`.
+VCV Rack (free edition) is
 the current test instrument, with the [MIDI-CAT](https://github.com/stoermelder/vcvrack-packone)
 module mapped to the patch's CV-controllable parameters over a MIDI loopback
 port.
