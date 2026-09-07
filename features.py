@@ -1,7 +1,13 @@
 import numpy as np
 
 LOUDNESS_REF_RMS = 0.4
-BRIGHTNESS_REF_HZ = 12000.0
+# Recalibrated against this patch's real achievable spectral centroid range: a
+# 150-sample random-CV recon pass measured raw (unnormalized) centroid values
+# up to ~6150 Hz (median ~365 Hz), so the prior 12000.0 value left brightness
+# permanently compressed into roughly the bottom half of [0, 1]. 7000.0 gives
+# ~14% headroom above the observed max, matching how LOUDNESS_REF_RMS=0.4
+# sits a similar margin above its own observed max RMS (~0.365).
+BRIGHTNESS_REF_HZ = 7000.0
 PITCH_LOG_MIN_HZ = 20.0
 PITCH_LOG_MAX_HZ = 4000.0
 

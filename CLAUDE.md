@@ -24,9 +24,15 @@ time, with zero ML.
 
 - `Rack2Free/` — VCV Rack Free 2.6.6 Linux build (downloaded from
   vcvrack.com/downloads, not vendored via apt — no distro package exists).
-- `patches/bridge_test.vcv` — the test patch (VCO → VCA → AudioInterface2,
-  plus an OSC'elot module), authored **directly as JSON** rather than built
-  by hand in the GUI (see below).
+- `patches/bridge_test.vcv` — the clean-slate test patch (VCO → VCA →
+  AudioInterface2, plus an OSC'elot module), authored **directly as JSON**
+  rather than built by hand in the GUI (see below). Kept unmodified for
+  future OSC'elot/MIDI-CAT debugging — it deliberately has no CC mappings.
+- `patches/bridge_test_mapped.vcv` — the one to actually launch for data
+  collection / control-loop runs: the same patch plus a MIDI-CAT module
+  with `vco_freq`/`vco_fm`/`vca_level` already mapped to CC 1/2/3. See
+  "MIDI-CAT mappings were never actually committed" below for why this file
+  exists separately and how it was built.
 - `roundtrip_test.py` — the round-trip proof script (OSC control out,
   audio capture in).
 - `quarantined-broken-plugins/` — a corrupted `Nozoid` plugin package that
@@ -512,3 +518,102 @@ the actually-patched LFO, not a missing connection. **This is still not a
 "phase 2 complete" result** — it is a confirmed, fixed correctness bug plus
 an honestly-reported partial improvement, with brightness's root cause
 still open for a future pass.
+
+## Follow-up session (2026-09-07): MIDI-CAT mappings were never actually
+committed, plus the brightness recalibration
+
+Picking up the two open items from the previous pass ("recollect the full
+sweep now that pitch is fixed" and "recalibrate `BRIGHTNESS_REF_HZ` against
+real data") surfaced a bigger, more basic gap first.
+
+**Discovery: `patches/bridge_test.vcv` never had a working CV mapping.**
+Relaunching VCV Rack from the committed patch to start a fresh collection
+run showed only `VCO → VCA → AudioInterface2 + OSCelot` — no MIDI-CAT
+module, matching `git log -- patches/bridge_test.vcv` (exactly one commit,
+the initial one). The MIDI-CAT module and its CC1/2/3 mappings that every
+earlier session verified against were added to a *live, running* Rack
+instance and never saved back into the committed `.vcv` file — they existed
+only in that process's memory and were lost the moment it was cleanly
+closed at the end of the previous session. A fresh clone of this repo could
+launch the committed patch and get zero working CV control. Also lost along
+with it: whatever LFO patching had been feeding `vco_freq`'s FM input in
+that same live session (mentioned in the last pass's `vco_fm` discussion) —
+the freshly-relaunched clean patch has nothing wired to the VCO's FM input
+at all, so that specific prior finding no longer describes the current
+patch state.
+
+**Fix: hand-authored the MIDI-CAT module directly into patch.json, no UI
+mapping-clicks required.** The same "VCV patches are hand-authorable JSON"
+fact from Phase 1 turns out to extend past adding modules to actually
+*mapping* them, which matters here because the "click a parameter to arm a
+mapping" gesture is the one specific interaction already confirmed broken
+for synthetic input in this environment. Recipe, fully scriptable:
+
+1. Read `Fundamental`'s `VCO.cpp`/`VCA.cpp` source directly (`gh api
+   repos/VCVRack/Fundamental/contents/src/VCO.cpp -H "Accept:
+   application/vnd.github.raw"`) to get each `ParamIds` enum's declaration
+   order — that order *is* the numeric `paramId` MidiCat needs. For this
+   patch: VCO `FREQ_PARAM`=2, `FM_PARAM`=4; VCA `LEVEL1_PARAM`=0 (confirmed
+   channel 1 is the one wired, via the patch's own `cables` list).
+2. Read `stoermelder/vcvrack-packone`'s `MidiCat.cpp` `dataToJson`
+   (`src/modules/midicat/MidiCat.cpp`) for the `maps` array schema — only
+   `cc`, `ccMode`, `moduleId`, `paramId`, `label` are needed per mapping;
+   everything else (`min`/`max`/`slew`/`curve`/etc.) defaults sanely when
+   omitted, matching the plugin's own shipped `presets/MidiCat/cc01-32.txt`.
+3. Append a `Stoermelder-P1`/`MidiCat` module object to `patch.json`'s
+   `modules` array with those three maps, repack
+   (`tar --zstd -cf out.vcv -C dir patch.json`), relaunch. Confirmed via
+   screenshot: all three mappings (`vco_freq`/`vco_fm`/`vca_level`) showed
+   up correctly labeled in the module's UI immediately — no click needed.
+4. The MIDI **device** selection (`In: ALSA` / `(No device)`) is a
+   *different* widget than the mapping-target click, but empirically it's
+   equally unresponsive to synthetic `xdotool` clicks here (tried: plain
+   click, focus-then-click, held mousedown with a screenshot mid-hold — no
+   effect in any case). Rather than ask for a manual click, this also
+   turned out to be hand-authorable: `midi::Port::toJson()`
+   (`VCVRack/Rack`'s `src/midi.cpp`) writes `{"driver": <id>, "deviceName":
+   <string>, "channel": <int>}`, matched back by *name* on load
+   (`fromJson` searches the driver's device list for a matching
+   `deviceName`), and RtMidi's ALSA backend builds that name as
+   `"<client>:<port> <client#>:<port#>"` (`MidiInAlsa::getPortName` in
+   `thestk/rtmidi`'s `RtMidi.cpp`) — the exact same string `mido` already
+   reports (`"Midi Through:Midi Through Port-0 14:0"`). Writing
+   `{"driver": 2, "deviceName": "Midi Through:Midi Through Port-0 14:0",
+   "channel": -1}` directly (driver id `2` = `RtMidi::Api::LINUX_ALSA`,
+   confirmed against `thestk/rtmidi`'s `RtMidi.h` enum and matching what a
+   fresh MidiCat module already defaulted to) resolved correctly on load —
+   confirmed both by the saved-back autosave JSON and by a screenshot
+   showing the device name (not "(No device)") in the module's own display.
+5. **Verified for real, not just "no error thrown"**: a live CC sweep on
+   `vca_level` (CC3, with CC1/CC2 held at mid) via `mido`, measuring actual
+   captured RMS via `sounddevice`, produced a clean monotonic response
+   (cc=0→0.0, 32→0.091, 64→0.183, 96→0.275, 127→0.363) — matching the
+   Phase-1-era numbers closely enough to confirm this is the same real
+   signal path, not a coincidence.
+
+Committed the working patch as `patches/bridge_test_mapped.vcv` (kept
+`bridge_test.vcv` itself unmodified, still useful as a clean slate for any
+future OSC'elot investigation). **Anyone reproducing this project from a
+fresh clone should launch `bridge_test_mapped.vcv`, not `bridge_test.vcv`.**
+
+**Brightness recalibration.** Before recollecting data, ran a 150-sample
+random-CV recon pass (`VCVRackBackend` + `features.rms`/`spectral_centroid`
+directly, no normalization) to measure this patch's actual achievable
+ranges instead of continuing to guess:
+
+| feature | median | p95 | max |
+|---|---|---|---|
+| RMS | 0.184 | 0.337 | 0.365 |
+| spectral centroid (Hz) | 366 | 4167 | 6150 |
+
+`LOUDNESS_REF_RMS=0.4` was already well-calibrated (max observed 0.365,
+~10% headroom). `BRIGHTNESS_REF_HZ=12000.0` was not — real brightness
+values could only ever reach ~0.51 normalized, permanently compressing the
+usable range. Changed to `7000.0` (~14% headroom above the observed max,
+matching loudness's margin) in `features.py`.
+
+**Recollected the full dataset.** `data_collection.py --main--`'s
+`n_samples=3000` default had never actually been used (every prior run used
+500 samples via ad hoc overrides) — this pass finally used it, with both
+fixes (pitch estimator, brightness constant) in place and the MIDI-CAT
+mapping actually working from a cleanly relaunched patch.
