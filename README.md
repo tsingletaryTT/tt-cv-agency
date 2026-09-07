@@ -15,13 +15,17 @@ extraction, the `CVBackend`/`VCVRackBackend` pair, data collection, the
 inverse-regression model, `TTInferenceEngine` (TTNN inference on real
 hardware), `run_control_loop` (the closed loop itself), and a live
 end-to-end verification against the running patch. A final whole-branch
-review then found and fixed a real correctness bug in the pitch feature
-(see "Results so far" below) and re-ran verification: the pipeline works
-end-to-end on real hardware with no exceptions, one of three target
-features (loudness) converges reliably, and the pitch fix produced a
-measurable, confirmed improvement in the pitch channel's behavior — but
-Phase 2 is not yet a full "hits every goal" result. `CLAUDE.md`'s final
-sections have the detailed diagnosis.
+review found and fixed a real correctness bug in the pitch feature; a
+follow-up pass then discovered the committed patch's MIDI-CAT mapping had
+never actually been saved (rebuilt by hand-authoring it directly into the
+patch JSON — see `CLAUDE.md`), recalibrated the brightness normalization
+against real measured data, and recollected the full 3000-sample dataset.
+The pipeline works end-to-end on real hardware with no exceptions; two of
+three target features (`vco_freq`, `vca_level`) now train to R² > 0.95, and
+live control-loop error tightened across the board — but Phase 2 is not yet
+a full "hits every goal" result, and brightness in particular still misses
+its goal more often than not. `CLAUDE.md`'s final sections have the
+detailed diagnosis.
 
 ## Why VCV Rack first
 
@@ -89,8 +93,33 @@ pitch estimator and retrained model: loudness converges in 2 of 3 goals,
 brightness still doesn't converge in any (unchanged, root cause still
 open), and pitch — which previously moved in a non-monotonic,
 goal-independent way — now tracks the goal monotonically and converges in
-1 of 3. Full detail, numbers, and the honest read of what's still broken
-are in `CLAUDE.md`'s "Phase 2 final-review fix pass" section.
+1 of 3.
+
+**Follow-up pass:** relaunching VCV Rack to recollect data surfaced a more
+basic gap — the committed patch's MIDI-CAT mapping had only ever existed in
+a live, never-saved Rack session, so a fresh clone had no working CV control
+at all. Rebuilt it by hand-authoring the MidiCat module directly into the
+patch's JSON (the same technique Phase 1 used to build patches
+programmatically) — verified with a real CC sweep against measured RMS, not
+just "no error thrown." Also recalibrated `BRIGHTNESS_REF_HZ` (12000.0 →
+7000.0) against a 150-sample real measurement of this patch's achievable
+spectral-centroid range, then recollected the full 3000-sample dataset (the
+`n_samples=3000` default had never actually been exercised before — every
+prior run used 500).
+
+Retrained on 3000 samples: `vco_freq` R² 0.71→0.95, `vca_level` R² 0.80→0.99.
+`vco_fm`'s R² is now ~0 — and this time fully explained rather than merely
+suspected: the rebuilt patch has nothing wired into the VCO's FM input at
+all, so that channel is genuinely unobservable in the current patch, not
+just weakly modeled. Live 3-goal verification tightened across the board
+(e.g. pitch error on the two non-converging goals roughly halved), though
+the convergence-threshold pass count barely moved — most of the improvement
+landed as "closer but still outside 0.05," not new passes. Brightness
+remains the weakest dimension; the recon data suggests part of that may be
+an intrinsically hard target rather than a pure modeling gap (the real
+achievable spectral-centroid distribution is heavily skewed toward low
+values). Full numbers and the complete honest read are in `CLAUDE.md`'s
+"MIDI-CAT mappings were never actually committed" section.
 
 ## What's here
 
@@ -100,6 +129,10 @@ are in `CLAUDE.md`'s "Phase 2 final-review fix pass" section.
 - `backends/vcv_rack.py` — `VCVRackBackend`, the real implementation: MIDI-CAT
   CV output over a MIDI loopback port, audio capture from a PipeWire loopback
   sink via a persistent `sounddevice` stream.
+- `patches/bridge_test_mapped.vcv` — the patch to actually launch: the base
+  test patch plus a MIDI-CAT module with `vco_freq`/`vco_fm`/`vca_level`
+  already mapped to CC 1/2/3. `patches/bridge_test.vcv` stays an unmodified
+  clean slate for future OSC'elot/MIDI-CAT debugging.
 - `configs/bridge_test.yaml` — channel → MIDI CC mapping for the test patch, so
   no channel identity or CC number is hardcoded in Python.
 - `features.py` — loudness (RMS), brightness (spectral centroid), and pitch
