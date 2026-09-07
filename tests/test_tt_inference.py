@@ -99,3 +99,29 @@ def test_tt_inference_rejects_channel_order_mismatch(tmp_path):
     # A matching order constructs cleanly and must still be closed.
     engine = TTInferenceEngine(weights_path=weights_path, expected_channels=["vco_freq", "vco_fm", "vca_level"])
     engine.close()
+
+
+@pytest.mark.hardware
+def test_tt_inference_handles_non_default_shape(tmp_path):
+    # Imported here (not at module scope) so merely collecting this test
+    # file never touches ttnn / opens a device without a gozer lease.
+    import ttnn  # noqa: F401
+    from tt_inference import TTInferenceEngine
+
+    torch.manual_seed(0)
+    model = InverseCVModel(n_features=6, n_channels=8)
+    weights_path = str(tmp_path / "weights.npz")
+    save_weights(model, weights_path)
+
+    target = np.random.default_rng(0).uniform(0, 1, size=6).astype(np.float32)
+    with torch.no_grad():
+        reference = model(torch.tensor(target).unsqueeze(0)).squeeze(0).numpy()
+
+    engine = TTInferenceEngine(weights_path=weights_path)
+    try:
+        result = engine.predict_cv(target)
+    finally:
+        engine.close()
+
+    assert result.shape == (8,)
+    assert np.allclose(result, reference, atol=0.1)

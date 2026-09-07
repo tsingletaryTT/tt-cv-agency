@@ -9,6 +9,31 @@ def test_inverse_cv_model_forward_shape():
     assert out.shape == (1, 3)
 
 
+def test_inverse_cv_model_parametric_shapes():
+    model = InverseCVModel(n_features=6, n_channels=8)
+    x = torch.randn(4, 6)
+    out = model(x)
+    assert out.shape == (4, 8)
+
+
+def test_inverse_cv_model_default_shapes_unchanged():
+    model = InverseCVModel()
+    x = torch.randn(4, 3)
+    out = model(x)
+    assert out.shape == (4, 3)
+
+
+def test_train_model_infers_dimensions_from_data():
+    rng = np.random.default_rng(0)
+    feature_array = rng.uniform(0, 1, size=(50, 6))
+    cv_array = rng.uniform(0, 1, size=(50, 8))
+
+    model = train_model(cv_array, feature_array, epochs=1)
+
+    assert model.fc1.in_features == 6
+    assert model.fc3.out_features == 8
+
+
 def test_train_model_reduces_loss_on_learnable_synthetic_data():
     # Synthetic ground truth: cv = features (identity-ish, easily learnable),
     # so a model that trains correctly should get close to it.

@@ -4,11 +4,11 @@ import torch.nn as nn
 
 
 class InverseCVModel(nn.Module):
-    def __init__(self):
+    def __init__(self, n_features: int = 3, n_channels: int = 3):
         super().__init__()
-        self.fc1 = nn.Linear(3, 32)
+        self.fc1 = nn.Linear(n_features, 32)
         self.fc2 = nn.Linear(32, 32)
-        self.fc3 = nn.Linear(32, 3)
+        self.fc3 = nn.Linear(32, n_channels)
 
     def forward(self, target_features: torch.Tensor) -> torch.Tensor:
         x = torch.relu(self.fc1(target_features))
@@ -17,7 +17,7 @@ class InverseCVModel(nn.Module):
 
 
 def train_model(cv_array: np.ndarray, feature_array: np.ndarray, epochs: int = 200, lr: float = 1e-3) -> InverseCVModel:
-    model = InverseCVModel()
+    model = InverseCVModel(n_features=feature_array.shape[1], n_channels=cv_array.shape[1])
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
