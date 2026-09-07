@@ -41,14 +41,19 @@ replacing it — all three existing channels (`vco_freq`, `vcf_cutoff`,
 `vca_level`) keep the same meaning.
 
 New modules, all already installed (Fundamental only): `SEQ3` (8-step
-sequencer, CV + gate), a second `LFO` instance used purely as a clock
-source, a third `LFO` instance for the slow filter sweep, one `ADSR` for
-the filter "pluck" envelope, and reusing the *existing* `8vert` module's
-spare rows as attenuverters (see below) rather than adding new utility
-modules for each one.
+sequencer, CV + gate — confirmed via source to self-clock from its own
+`TEMPO_PARAM` whenever its `CLOCK_INPUT` jack is left unpatched, so no
+separate clock module is needed at all), one `LFO` instance for the slow
+filter sweep, one `ADSR` for the filter "pluck" envelope, and reusing the
+*existing* `8vert` module's spare rows as attenuverters (see below) rather
+than adding new utility modules for each one. (An earlier draft of this
+spec called for a second `LFO` purely as an external clock source for
+`SEQ3` — dropped once `SEQ3`'s own source showed the self-clocking
+behavior; corrected here rather than left to be rediscovered at build
+time.)
 
 ```
- clock LFO (square) ──▶ SEQ3 clock in
+                    SEQ3 (self-clocked via its own TEMPO_PARAM)
                           │ CV1 (pitch)           │ gate
                           ▼                        ▼
   8vert row1 (transposition) ──┐              ADSR (fixed env shape)
@@ -79,7 +84,7 @@ to discover the hard way.
 
 | channel | drives | range goal |
 |---|---|---|
-| `seq_tempo` | clock LFO rate | roughly 1-8 Hz step rate (a 1-8 second loop for 8 steps) |
+| `seq_tempo` | `SEQ3`'s own `TEMPO_PARAM` | roughly 1-8 Hz step rate (a 1-8 second loop for 8 steps) |
 | `sweep_rate` | sweep LFO rate | slow — well under 1 Hz, "subtle" per the original ask |
 | `sweep_depth` | 8vert row 2 gain (sweep LFO → VCF cutoff) | small — a wobble, not a full sweep across the whole cutoff range |
 | `filter_env_amount` | 8vert row 3 gain (ADSR → VCF cutoff) | the main "squelch" control — wider range than `sweep_depth` |

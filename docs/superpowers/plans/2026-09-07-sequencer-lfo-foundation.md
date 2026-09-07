@@ -407,7 +407,7 @@ backend = VCVRackBackend('configs/sequencer_test.yaml')
 try:
     engine = TTInferenceEngine(weights_path='data/sequencer_model_weights.npz', expected_channels=backend.channels())
     try:
-        goal = np.array([0.5, 0.05, 0.5, 0.1, 0.05, 0.5, 0.5, 0.5])  # 6 dims: mean/std x loudness/brightness/pitch
+        goal = np.array([0.5, 0.05, 0.5, 0.1, 0.5, 0.05])  # 6 dims: [mean, std] x [loudness, brightness, pitch]
         history = run_control_loop(backend, predict_fn=engine.predict_cv, goal_features=goal, aggregate_window_s=5.0)
         print(f'final: {history[-1]}, goal: {goal}')
     finally:
