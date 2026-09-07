@@ -9,17 +9,25 @@ midi_port_name: "Midi Through:Midi Through Port-0 14:0"
 channels:
   vco_freq:
     cc: 1
+    description: "Base pitch of the bass voice. Low = deep bass, high = higher register."
   vcf_cutoff:
     cc: 2
+    description: "Filter brightness. Low = dark/muffled, high = bright/harsh."
   vca_level:
     cc: 3
+    description: "Overall loudness."
   seq_tempo:
     cc: 4
+    description: "Speed of the looping 8-step sequence. Low = slow, high = fast."
   sweep_rate:
     cc: 5
+    description: "Speed of the continuous filter sweep (separate from the sequence tempo)."
   sweep_depth:
     cc: 6
+    description: "How much the continuous sweep moves the filter. Low = subtle, high = dramatic."
   filter_env_amount:
     cc: 7
+    description: "Intensity of the per-note filter pluck/squelch triggered by each sequencer step. This is the main 'squelchy acid' control."
   vcf_resonance:
     cc: 8
+    description: "Filter resonance/sharpness. Low = smooth, high = sharp, whistling, squelchy."

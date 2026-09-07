@@ -16,9 +16,10 @@ def test_load_channel_config_reads_cc_numbers(tmp_path):
         "  chan_b:\n"
         "    cc: 9\n"
     )
-    midi_port_name, channel_cc = load_channel_config(str(config_path))
+    midi_port_name, channel_cc, descriptions = load_channel_config(str(config_path))
     assert midi_port_name == "Fake Port"
     assert channel_cc == {"chan_a": 5, "chan_b": 9}
+    assert descriptions == {"chan_a": "", "chan_b": ""}
 
 
 @patch("backends.vcv_rack.sd.InputStream")
@@ -120,3 +121,24 @@ def test_callback_keeps_only_latest_block_in_bounded_queue(mock_open_output, moc
     # read_audio_block mono-mixes stereo -- the *second* (latest) block's
     # values should be what comes back, not the first
     assert np.allclose(result, np.mean(second_block, axis=1))
+
+
+def test_load_channel_config_returns_descriptions():
+    from backends.vcv_rack import load_channel_config
+    # Use an existing fixture config or write a small temp YAML inline via tmp_path
+    midi_port, channel_cc, descriptions = load_channel_config("configs/sequencer_test.yaml")
+    assert descriptions["vco_freq"] == "Base pitch of the bass voice. Low = deep bass, high = higher register."
+    assert set(descriptions.keys()) == set(channel_cc.keys())
+
+
+def test_load_channel_config_handles_missing_descriptions(tmp_path):
+    from backends.vcv_rack import load_channel_config
+    config_path = tmp_path / "no_descriptions.yaml"
+    config_path.write_text(
+        'midi_port_name: "test"\n'
+        "channels:\n"
+        "  foo:\n"
+        "    cc: 1\n"
+    )
+    _, channel_cc, descriptions = load_channel_config(str(config_path))
+    assert descriptions["foo"] == ""

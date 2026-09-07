@@ -18,11 +18,14 @@ class AudioBlockTimeoutError(RuntimeError):
     callers of this method may be holding a gozer chip lease at the time."""
 
 
-def load_channel_config(config_path: str) -> tuple[str, dict[str, int]]:
+def load_channel_config(config_path: str) -> tuple[str, dict[str, int], dict[str, str]]:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
     channel_cc = {name: entry["cc"] for name, entry in raw["channels"].items()}
-    return raw["midi_port_name"], channel_cc
+    channel_descriptions = {
+        name: entry.get("description", "") for name, entry in raw["channels"].items()
+    }
+    return raw["midi_port_name"], channel_cc, channel_descriptions
 
 
 class VCVRackBackend(CVBackend):
@@ -33,7 +36,7 @@ class VCVRackBackend(CVBackend):
         block_size: int = 1024,
         read_timeout_s: float = 5.0,
     ):
-        midi_port_name, self._channel_cc = load_channel_config(config_path)
+        midi_port_name, self._channel_cc, self._channel_descriptions = load_channel_config(config_path)
         self._channel_names = list(self._channel_cc.keys())
         self._last_cv = {name: 0.5 for name in self._channel_names}
         self._sample_rate = sample_rate
@@ -74,6 +77,9 @@ class VCVRackBackend(CVBackend):
 
     def channels(self) -> list[str]:
         return self._channel_names
+
+    def channel_descriptions(self) -> dict[str, str]:
+        return self._channel_descriptions
 
     def sample_rate(self) -> int:
         return self._sample_rate
