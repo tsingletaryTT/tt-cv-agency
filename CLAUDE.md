@@ -1153,3 +1153,61 @@ measurement, unchanged and not re-taken (their ranges didn't move):
 | `vco_freq` (re-verify vs Minimoog patch) | median pitch, cc 64/96/127 | 132.6/266.7/521.7 Hz — matches un-sequenced baseline (132.2/265.2/521.7) almost exactly. cc0/32 showed elevated readings (82.5/70.2 Hz vs expected 32.7/65.8 Hz) — root-caused via a direct raw-param read (not audio) as a pitch-estimation block-size/frequency-floor artifact at low fundamentals, not a wiring defect; a known limitation worth carrying forward, not a Stage 0 defect |
 | `vcf_cutoff` (re-verify) | rms + centroid, cc 0/32/64/96/127 | rms 0.0005→0.0016→0.0915→0.2484→0.3303, centroid 207.8→151.3→199.6→550.2→1725.5 Hz — monotonic, consistent with the Minimoog-only baseline |
 | `vca_level` (re-verify) | rms, cc 0/32/64/96/127 | 0.0000→0.0832→0.1664→0.2488→0.3296 — clean monotonic |
+
+## Stage 1 Task 6 (2026-09-07): `instruction_to_preset.py` capstone script, and
+an explicit gap — it has never actually talked to an LLM
+
+Stage 1 (Tasks 1-5, all merged to `main`) built a shared windowed-audio-read
+helper (`features.read_aggregated_window`), per-channel descriptions on
+`VCVRackBackend.channel_descriptions()`, an `InstructionParser` abstract
+interface with shared Pydantic-based recipe validation
+(`instruction_parser/schema.py`, `instruction_parser/prompts.py`), an
+Anthropic-backed implementation (`instruction_parser/anthropic_parser.py`),
+and a local/OpenAI-compatible implementation
+(`instruction_parser/local_parser.py`). Task 6 wires all five pieces
+together into `instruction_to_preset.py`: parse an instruction into a CV
+recipe via `channels = backend.channel_descriptions()` /
+`instruction_parser.parse_recipe(instruction, channels)`, push each value
+out over MIDI via `backend.set_cv`, let the patch settle, then read real
+audio back via `features.read_aggregated_window` and print the recipe plus
+the measured `[mean, std] x [loudness, brightness, pitch]` vector.
+
+**What's verified**: every module the script imports from was read fresh
+against its actual current source (not just the plan's transcription)
+before writing this script, and `python3 instruction_to_preset.py --help`
+runs clean — confirming the whole import chain (`backends.vcv_rack`,
+`features`, `instruction_parser.anthropic_parser`,
+`instruction_parser.local_parser`, and transitively `instruction_parser.
+{base,prompts,schema}`) resolves with no stale import path left over from
+Task 5's relocation of the system-prompt builder into
+`instruction_parser/prompts.py`, and that the CLI's argument surface
+(`--llm {anthropic,local}`, `--model`, `--base-url`, `--settle-time-s`,
+`--aggregate-window-s`) is well-formed. All of Stage 1's parsing/validation
+logic is unit-tested against mocked LLM responses (`tests/` — recipe schema
+validation, malformed-JSON/out-of-range/missing-channel error paths, both
+parsers' request-building).
+
+**What's explicitly NOT verified — a real gap, not an oversight**: this
+script has never been run end-to-end against a real LLM. This machine
+currently has neither an `ANTHROPIC_API_KEY` (nor an `ant auth login`
+profile) configured, nor any local OpenAI-compatible model server running
+to point `--base-url` at. That means:
+- No real Anthropic API call has ever gone through
+  `AnthropicInstructionParser.parse_recipe` from this script — only through
+  mocked `anthropic.Anthropic()` clients in tests.
+- No real local server (vLLM, Ollama, llama.cpp server, LM Studio, ...) has
+  ever answered a `LocalInstructionParser.parse_recipe` call from this
+  script.
+- Consequently, nobody has yet seen a real model's actual channel-value
+  choices for a real instruction, nor how well those choices sound once
+  applied to the live patch and measured back through
+  `read_aggregated_window` — the whole point of Stage 1.
+
+**To close this gap**, whoever picks this up next needs either: an
+`ANTHROPIC_API_KEY` env var (or an `ant auth login` profile) to run
+`python3 instruction_to_preset.py "<instruction>" --llm anthropic`, or a
+running OpenAI-compatible local server plus its `--base-url` (and usually
+`--model`) to run with `--llm local`. Closing it is the natural next step
+the moment either becomes available — this section exists so that step is
+remembered as outstanding, not assumed already done because the code
+merged and the tests are green.
