@@ -1,0 +1,16 @@
+# configs/minimoog_test.yaml
+# Channel map for patches/minimoog_test.vcv (3xVCO -> Mixer -> VCF -> VCA).
+# vco_freq drives VCO1's cutoff-frequency knob directly; VCO2 (+7 semitones)
+# and VCO3 (-12 semitones) track it in lockstep via matching-width, shifted
+# MIDI-CAT min/max bands on the same CC -- see CLAUDE.md for the derivation.
+# vcf_cutoff replaces the old bridge_test patch's vco_fm channel (which had
+# nothing patched into its FM input and did nothing audible) with a real,
+# always-effective brightness control: the filter's own cutoff frequency.
+midi_port_name: "Midi Through:Midi Through Port-0 14:0"
+channels:
+  vco_freq:
+    cc: 1
+  vcf_cutoff:
+    cc: 2
+  vca_level:
+    cc: 3

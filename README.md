@@ -129,12 +129,20 @@ values). Full numbers and the complete honest read are in `CLAUDE.md`'s
 - `backends/vcv_rack.py` — `VCVRackBackend`, the real implementation: MIDI-CAT
   CV output over a MIDI loopback port, audio capture from a PipeWire loopback
   sink via a persistent `sounddevice` stream.
-- `patches/bridge_test_mapped.vcv` — the patch to actually launch: the base
-  test patch plus a MIDI-CAT module with `vco_freq`/`vco_fm`/`vca_level`
-  already mapped to CC 1/2/3. `patches/bridge_test.vcv` stays an unmodified
-  clean slate for future OSC'elot/MIDI-CAT debugging.
-- `configs/bridge_test.yaml` — channel → MIDI CC mapping for the test patch, so
-  no channel identity or CC number is hardcoded in Python.
+- `patches/bridge_test_mapped.vcv` — the original single-VCO test patch:
+  the base test patch plus a MIDI-CAT module with
+  `vco_freq`/`vco_fm`/`vca_level` mapped to CC 1/2/3. `patches/bridge_test.vcv`
+  stays an unmodified clean slate for future OSC'elot/MIDI-CAT debugging.
+- `patches/minimoog_test.vcv` — a proper Minimoog-equivalent (East Coast)
+  subtractive-synthesis foundation: 3 detuned `VCO`s → `Mixer` → `VCF` →
+  `VCA`, with `vco_freq`/`vcf_cutoff`/`vca_level` as the CV-controllable
+  channels. `vcf_cutoff` replaces the old patch's dead `vco_fm` channel with
+  a real, always-effective brightness control. See `CLAUDE.md` for the
+  full design, the module-source verification, and a real tracking bug
+  this uncovered and fixed along the way.
+- `configs/bridge_test.yaml` / `configs/minimoog_test.yaml` — channel → MIDI
+  CC mapping for each patch, so no channel identity or CC number is
+  hardcoded in Python.
 - `features.py` — loudness (RMS), brightness (spectral centroid), and pitch
   (autocorrelation) feature extraction, each normalized to roughly `[0, 1]`.
 - `data_collection.py` — sweeps random CV settings against a `CVBackend` and

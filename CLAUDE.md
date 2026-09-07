@@ -675,3 +675,95 @@ densely sampled band of the real CV space rather than a typical setting.
 patching a real modulation source into its FM input (e.g. an LFO) would be
 a reasonable next step if that channel's control is ever needed for real,
 but is out of scope for this pass.
+
+## Minimoog-equivalent patch (2026-09-07): a proper subtractive-synthesis
+foundation, replacing the ad hoc single-VCO test patch
+
+User asked for a system "more or less the equivalent of a Buchla Easel
+(West Coast) or a Minimoog (East Coast)" as a foundation for future
+experiments. Checked the actual VCV Library and — better — the plugin
+packs already installed on this machine (`ls
+~/.local/share/Rack2/plugins-lin-x64/`): `Fundamental`, `Befaco`,
+`AudibleInstruments`, `ESeries`, `Grayscale`, `AmalgamatedHarmonics`,
+`Kilpatrick-Toolbox`, `Stoermelder-P1` — enough for either architecture
+with zero new installs. Recommended and built the Minimoog (East Coast)
+first: it reuses exactly the CV-target types already validated in this
+project (continuous, monotonic — filter cutoff especially), where the
+Easel's complex-oscillator/wavefolder/lopass-gate West Coast approach
+would need genuinely new, untested modules and a real design compromise
+(no true vactrol LPG is installed).
+
+**Signal path**: 3× Fundamental `VCO` (saw, saw, sub-octave square) →
+`Mixer` → `VCF` (24dB multimode, lowpass out) → `VCA` (slug `VCA`, the
+same 2-channel module the original bridge_test patch used). `ADSR`/`LFO`
+were deliberately left out of the CV-automated path: they're
+gate/trigger-driven, and this project's whole control model is
+"set a continuous [0,1] CV value and hold it" (`data_collection.py`,
+`control_loop.py`) — an ADSR needs a `GATE_INPUT` transition to do
+anything, which doesn't exist anywhere in this architecture yet. Wiring
+one in would mean sampling audio at an arbitrary, inconsistent phase of
+each envelope cycle. Both modules are available in Fundamental for a
+future gate-triggered experiment; this patch just doesn't use them.
+
+**New patch**: `patches/minimoog_test.vcv`, built the same
+hand-authored-JSON way as `bridge_test_mapped.vcv` — every module's
+`ParamIds`/`InputIds`/`OutputIds` enum order confirmed against
+`VCVRack/Fundamental`'s actual source (`VCO.cpp`, `VCF.cpp`, `Mixer.cpp`,
+`8vert.cpp`) before writing any JSON, not guessed. New config:
+`configs/minimoog_test.yaml` (same `vco_freq`/`vcf_cutoff`/`vca_level`
+channel shape as before — `vcf_cutoff` replaces the old patch's
+`vco_fm`, which had nothing patched into its FM input and did nothing
+audible; the filter's own cutoff is a real, always-effective brightness
+control instead).
+
+**A real mistake, caught by verification, not assumed away.** First
+attempt tried to make VCO2 (+7 semitones) and VCO3 (-12 semitones) track
+VCO1's pitch by mapping the *same* MIDI-CAT CC to three separate
+`(moduleId, paramId)` slots at once, each with a shifted `min`/`max`
+sub-range (band-shifting math to get a constant relative-semitone offset
+at every CC value — mathematically sound on paper). Audio sweep
+looked plausible at first (centroid/RMS changed smoothly with the CC).
+But directly reading the raw `FREQ_PARAM` values back from a *fresh*
+autosave (confirmed fresh via `stat`, not just "waited a bit") after
+sending CC=0 and then CC=127 showed **the identical raw value both
+times** — the multi-slot-per-CC mapping doesn't actually track reliably
+(most likely a CC→slot dispatch collision inside MIDI-CAT when multiple
+slots share one CC number; not fully root-caused in
+`stoermelder/vcvrack-packone` source, and not worth fully root-causing
+given a clean fix existed). This is exactly the project's own "trust the
+subject, verify the instrument" principle: the *audio* evidence alone
+would have been believed as confirmation, and would have been wrong.
+
+**Fix**: added `Fundamental` `8vert` (an attenuverter module whose own
+description says it "creates constant voltages" when its input is
+unpatched — confirmed in source: `in[16] = {10.f}` is the default with
+nothing patched in). One row's gain param, MIDI-CAT-mapped (a single,
+ordinary one-CC-to-one-param slot, the already-proven pattern), produces
+a shared CV that's cabled into all three VCOs' `PITCH_INPUT` (confirmed
+via source that VCO pitch is `FREQ_PARAM/12 + PITCH_INPUT`, true 1V/oct
+addition). Each VCO's own `FREQ_PARAM` knob stays fixed at its static
+detune offset; the shared CV transposes all three together. Re-verified
+with the same two methods that had disagreed the first time: a CC sweep
+now shows clean, monotonic, ~doubling-per-quartile pitch (32.7 → 65.8 →
+132.2 → 265.2 → 521.7 Hz across cc=0/32/64/96/127 — consistent with real
+1V/oct exponential scaling), and this time a fresh raw-param read agrees.
+
+**Verified all three channels for real** (CC sweep + measured
+RMS/centroid/pitch, `cutoff` and `level` held at fixed midpoints/maxima
+while sweeping each target channel):
+
+| channel | sweep behavior |
+|---|---|
+| `vco_freq` | pitch 32.7→521.7 Hz, clean monotonic 1V/oct doubling |
+| `vcf_cutoff` | rms 0.0003→0.201, centroid 113→2534 Hz, monotonic |
+| `vca_level` | rms 0.0000→0.252, monotonic |
+
+Not yet done: any data collection, retraining, or live control-loop
+verification against this new patch — this session only built and
+verified the instrument itself, per the user's ask for "a logical
+default patch to use as the foundation for our next experiments." The
+existing `data_collection.py`/`model.py`/`control_loop.py` code is
+patch-agnostic (reads `configs/*.yaml` + whatever `.vcv` is currently
+running) so pointing them at this new patch needs no code changes —
+just launch `minimoog_test.vcv` and pass `configs/minimoog_test.yaml`
+instead of the bridge_test files.
