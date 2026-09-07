@@ -137,6 +137,7 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
 | date | screenshot |
 |---|---|
 | 2026-09-07 | [Minimoog-equivalent patch](docs/journal/2026-09-07-minimoog-patch.png) — 3xVCO → Mixer → VCF → VCA, MIDI-CAT mapping vco_freq/vcf_cutoff/vca_level |
+| 2026-09-07 | [Sequencer + LFO foundation](docs/journal/2026-09-07-sequencer-patch.png) — adds a self-clocked SEQ3 sequencer, a filter-sweep LFO, and a filter-envelope ADSR (Stage 0 of the roadmap in `CLAUDE.md`); 8 MIDI-CAT channels total |
 
 ## What's here
 
