@@ -1,9 +1,10 @@
+import math
 import time
 from typing import Callable
 import numpy as np
 
 from backends.base import CVBackend
-from features import extract_features
+from features import extract_features_aggregated
 
 
 def run_control_loop(
@@ -15,6 +16,7 @@ def run_control_loop(
     control_interval_s: float = 0.1,
     max_iterations: int = 100,
     convergence_threshold: float = 0.05,
+    aggregate_window_s: float = 5.0,
 ) -> list[np.ndarray]:
     # sample_rate defaults to the backend's own real value -- passing it
     # explicitly is kept only for backward compatibility / test convenience.
@@ -23,12 +25,21 @@ def run_control_loop(
     # with what the backend actually captured its audio at.
     if sample_rate is None:
         sample_rate = backend.sample_rate()
+    # Same windowed-read rationale as collect_sweep_dataset: one instantaneous
+    # block can't represent a looping pattern, so each iteration reads a whole
+    # window of blocks spanning aggregate_window_s seconds and reduces it to
+    # the 6-dim [mean, std] x [loudness, brightness, pitch] aggregate.
+    # goal_features must now be 6-dim to match (breaking change -- see Task 4
+    # brief). The __main__ block below still passes a 3-dim goal and is left
+    # as-is here on purpose: updating it to point at the new 6-feature/
+    # 8-channel patch is Task 5's job, not this task's.
+    blocks_per_window = max(1, math.ceil(aggregate_window_s * sample_rate / backend.block_size()))
     channels = backend.channels()
     history: list[np.ndarray] = []
 
     for _ in range(max_iterations):
-        block = backend.read_audio_block()
-        current_features = extract_features(block, sample_rate)
+        blocks = [backend.read_audio_block() for _ in range(blocks_per_window)]
+        current_features = extract_features_aggregated(blocks, sample_rate)
         history.append(current_features)
 
         if np.linalg.norm(current_features - goal_features) < convergence_threshold:
