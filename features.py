@@ -87,3 +87,12 @@ def extract_features(block: np.ndarray, sample_rate: int) -> np.ndarray:
             np.log2(PITCH_LOG_MAX_HZ) - np.log2(PITCH_LOG_MIN_HZ)
         )
     return np.array([loudness, brightness, pitch_norm], dtype=np.float64)
+
+
+def extract_features_aggregated(blocks: list[np.ndarray], sample_rate: int) -> np.ndarray:
+    per_block = np.array([extract_features(block, sample_rate) for block in blocks])
+    means = per_block.mean(axis=0)
+    stds = per_block.std(axis=0)
+    return np.array(
+        [means[0], stds[0], means[1], stds[1], means[2], stds[2]], dtype=np.float64
+    )

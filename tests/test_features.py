@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from features import rms, spectral_centroid, estimate_pitch, extract_features
+from features import rms, spectral_centroid, estimate_pitch, extract_features, extract_features_aggregated
 
 
 def test_rms_of_silence_is_zero():
@@ -71,3 +71,26 @@ def test_extract_features_returns_length_3_array_in_unit_range():
 def test_extract_features_of_silence_has_zero_loudness():
     feats = extract_features(np.zeros(4096, dtype=np.float32), sample_rate=48000)
     assert feats[0] == 0.0
+
+
+def test_extract_features_aggregated_shape():
+    rng = np.random.default_rng(0)
+    blocks = [rng.uniform(-1, 1, size=1024) for _ in range(5)]
+    result = extract_features_aggregated(blocks, sample_rate=48000)
+    assert result.shape == (6,)
+
+
+def test_extract_features_aggregated_detects_modulation():
+    # A block-to-block AMPLITUDE-MODULATED signal (loudness genuinely
+    # changing across blocks) must show higher loudness-std than a
+    # constant-amplitude signal with the same mean loudness.
+    sample_rate = 48000
+    t = np.arange(1024) / sample_rate
+    static_blocks = [0.5 * np.sin(2 * np.pi * 220 * t) for _ in range(8)]
+    modulated_blocks = [
+        (0.1 + 0.4 * (i % 2)) * np.sin(2 * np.pi * 220 * t) for i in range(8)
+    ]
+    static_result = extract_features_aggregated(static_blocks, sample_rate)
+    modulated_result = extract_features_aggregated(modulated_blocks, sample_rate)
+    loudness_std_index = 1
+    assert modulated_result[loudness_std_index] > static_result[loudness_std_index] * 2
