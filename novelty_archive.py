@@ -9,6 +9,10 @@ class NoveltyArchive:
     docs/superpowers/specs/2026-09-08-stage2-exploration-design.md."""
 
     def __init__(self, max_size: int, k_neighbors: int, novelty_threshold: float | None):
+        if max_size < 1:
+            raise ValueError(f"max_size must be >= 1, got {max_size}")
+        if k_neighbors < 1:
+            raise ValueError(f"k_neighbors must be >= 1, got {k_neighbors}")
         self._max_size = max_size
         self._k_neighbors = k_neighbors
         self._novelty_threshold = novelty_threshold
@@ -42,6 +46,16 @@ class NoveltyArchive:
         return float(nearest.mean())
 
     def add(self, cv_vector: np.ndarray, feature_vector: np.ndarray, score: float) -> bool:
+        # A score of exactly 0.0 (or negative, which shouldn't occur but is
+        # guarded anyway) means the candidate's feature vector exactly
+        # coincides with its k nearest existing neighbors -- a genuine
+        # zero-novelty duplicate. Reject it unconditionally, even when the
+        # archive has empty slots, so a run that repeatedly reads
+        # frozen/identical audio can't silently fill the archive with
+        # bit-identical "accepted" members.
+        if score <= 0.0:
+            return False
+
         if self._novelty_threshold is not None and score <= self._novelty_threshold:
             return False
 
@@ -67,8 +81,25 @@ class NoveltyArchive:
         return self._cv_vectors[index]
 
     def to_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Stack the archive's current members into three parallel arrays:
+        (cv_vectors, feature_vectors, scores). The returned `scores` array is
+        the score each member was passed to `add()` with **at insertion
+        time** -- as the archive's composition changes afterward (evictions,
+        new members), a member's true leave-one-out novelty relative to the
+        *current* archive can drift away from that stored value. Use
+        `final_novelty_scores()` instead if you need each member's novelty
+        relative to the archive as it stands right now."""
         return (
             np.array(self._cv_vectors),
             np.array(self._feature_vectors),
             np.array(self._scores),
         )
+
+    def final_novelty_scores(self) -> np.ndarray:
+        """Recompute each current member's leave-one-out novelty against the
+        archive as it stands right now (the same computation `add()` uses
+        internally to decide what to evict), in the same order `to_arrays()`
+        returns members in. Unlike the `scores` array from `to_arrays()`
+        (which is frozen as of each member's insertion time), this always
+        reflects the archive's current composition."""
+        return np.array([self._leave_one_out_novelty(i) for i in range(len(self))])

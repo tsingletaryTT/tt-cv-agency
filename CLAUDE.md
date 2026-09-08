@@ -1305,8 +1305,11 @@ for the exit notification instead of chasing a false "no output" alarm).
 **Result: archive filled to the full 60/60**, from 105/200 accepted
 candidates (95 rejected as insufficiently novel — a healthy accept rate
 for a mutation-plus-random-restart search, not "everything gets in").
-Final novelty scores among the 60 kept members: **min 0.0389, max 0.6704,
-mean 0.1782**.
+Final leave-one-out novelty (not insertion-time — recomputed against the
+final 60-member archive via `NoveltyArchive.final_novelty_scores()`, per
+this stage's fix-round-1 review; the originally-saved insertion-time
+scores were stale and have been corrected on disk) among the 60 kept
+members: **min 0.1182, max 0.5091, mean 0.1654**.
 
 ### A real anomaly, caught and root-caused rather than reported as a bare "looks off"
 
@@ -1364,25 +1367,44 @@ miscalibrated-looking behavior rather than wave it past:
 
 ### Spot-check: three archived CV vectors, by their measured features
 
-Picked by novelty score (lowest, median, highest kept member) rather than
-cherry-picked, `[mean, std]` order is `[loudness, brightness, pitch]`:
+Picked by **corrected** final leave-one-out novelty score (lowest, median,
+highest kept member — this fix-round-1 correction reordered which three
+members these are relative to the original, stale-score pick) rather than
+cherry-picked. `features.py`'s `extract_features_aggregated` interleaves
+its output as `[mean(loudness), std(loudness), mean(brightness),
+std(brightness), mean(pitch), std(pitch)]`, so the correct `[mean, std]`
+column order below is loudness = elements `[0,1]`, brightness = elements
+`[2,3]`, pitch = elements `[4,5]` (an earlier version of this table
+misread this layout in 2 of 3 rows):
 
 | member | `vca_level` | `vcf_cutoff` | loud `[mean,std]` | bright `[mean,std]` | pitch `[mean,std]` | score |
 |---|---|---|---|---|---|---|
-| lowest-novelty | 0.000 | 0.717 | `[0.0000, 0.0000]` | `[0.0000, 0.0000]` | `[0.0060, 0.0432]` | 0.0389 |
-| median-novelty | 0.823 | 0.913 | `[0.4322, 0.0410]` | `[0.0410, 0.1789]` | `[0.0334, 0.4834]` | 0.1420 |
-| highest-novelty | 0.462 | 1.000 | `[0.1337, 0.0048]` | `[0.9714, 0.0417]` | `[0.6660, 0.1311]` | 0.6704 |
+| lowest-novelty | 0.000 | 0.696 | `[0.0000, 0.0000]` | `[0.0050, 0.0313]` | `[0.0000, 0.0000]` | 0.1182 |
+| median-novelty | 0.581 | 0.925 | `[0.2954, 0.0194]` | `[0.3178, 0.0487]` | `[0.3423, 0.0479]` | 0.1420 |
+| highest-novelty | 0.462 | 1.000 | `[0.1337, 0.0048]` | `[0.9714, 0.0417]` | `[0.6660, 0.1311]` | 0.5091 |
 
 These are visibly, meaningfully different sounds, not just algorithmically
 distinct numbers: the lowest-novelty member is `vca_level=0.0` — silence,
-correctly measured as all-zero loudness/brightness with only noise-floor
-pitch jitter; the median member is loud with low/moderate brightness and a
-wide-swinging pitch (an active sequence at a bright-ish but not maxed
-cutoff); the highest-novelty member is moderately loud but **very**
-bright (`vcf_cutoff=1.0`, brightness mean 0.971 — the archive's most
-extreme brightness reading) with a wildly swinging pitch (std 0.666, the
-widest pitch spread of any of the three) — a harsh, warbling, near-fully-open-filter
-patch, about as far from "silence" as this instrument gets.
+measured as all-zero loudness and exactly-zero pitch (no periodicity
+detected in a fully silent block); its brightness isn't quite zero (mean
+0.005, std 0.031), a small nonzero spectral-centroid reading off an
+essentially-silent block rather than a meaningful tonal quality. The
+median member is moderately loud (mean 0.295) with moderate brightness
+(mean 0.318) and a mid-range pitch (mean 0.342) — and, notably, all three
+of its `std` values are small (0.019-0.049), meaning this is a *steady*
+patch, not a wide-swinging one (an earlier version of this table's prose
+mistakenly attributed a "wide-swinging pitch" to this member — that
+claim was quoting a *mean*, not a `std`, and doesn't hold for the
+corrected median member's actual std values). The highest-novelty member
+is moderately loud (mean 0.134) but **very** bright (`vcf_cutoff=1.0`,
+brightness mean 0.971 — the archive's most extreme brightness reading)
+with a wildly swinging pitch (std 0.131 — the widest pitch spread of any
+of the three, by a wide margin over the median's 0.048 and the lowest's
+0.0) — a harsh, warbling, near-fully-open-filter patch, about as far from
+"silence" as this instrument gets. (This highest-novelty member happens
+to be the same archived member under both the original stale scoring and
+the corrected scoring — its raw feature values are unchanged, only its
+reported score moved, from 0.6704 to 0.5091.)
 
 ### No clustering in a narrow band — coverage looks healthy
 
