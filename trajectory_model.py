@@ -5,6 +5,16 @@ import torch.nn as nn
 
 
 class TrajectoryPredictor(nn.Module):
+    """A 3-layer MLP that predicts the next state given current state and action.
+
+    The model concatenates state and action into a single input vector, then
+    passes through two hidden ReLU layers before outputting the predicted next
+    state. This architecture matches the structure of InverseCVModel in model.py
+    (which maps features -> CV outputs), adapted here to map (state, action) ->
+    next_state for trajectory prediction. The concatenation is the natural way
+    to combine heterogeneous inputs (state dimensions + action dimensions) into
+    a single learned representation.
+    """
     def __init__(self, state_dim: int = 6, action_dim: int = 8, hidden: int = 32):
         super().__init__()
         self.fc1 = nn.Linear(state_dim + action_dim, hidden)
@@ -22,6 +32,12 @@ def train_predictor(
     states: np.ndarray, actions: np.ndarray, next_states: np.ndarray,
     epochs: int = 200, lr: float = 1e-3,
 ) -> TrajectoryPredictor:
+    """Train a TrajectoryPredictor on a batch of (state, action, next_state) tuples.
+
+    Performs full-batch gradient descent with the Adam optimizer and MSE loss.
+    The state and action dimensions are inferred from the data shapes, allowing
+    the same training function to work for any state/action dimensionality.
+    """
     model = TrajectoryPredictor(state_dim=states.shape[1], action_dim=actions.shape[1])
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
@@ -44,6 +60,17 @@ def train_val_split_trajectories(
     states: np.ndarray, actions: np.ndarray, next_states: np.ndarray,
     val_fraction: float = 0.2, seed: int = 0,
 ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Split (state, action, next_state) trajectory tuples into a train set and a
+    held-out validation set, shuffled by `seed` so the split is reproducible.
+    Returns ((states_train, actions_train, next_states_train), (states_val, actions_val, next_states_val)).
+
+    A held-out validation split is essential because in-sample training error can hide
+    that the model learned very little on certain state dimensions. Per-dimension
+    validation metrics surface which dimensions the model has mastered (high R^2) and
+    which it has not (low R^2), revealing whether the model is suitable for
+    trajectory-following control on all dimensions. An aggregate in-sample MSE alone
+    cannot expose these per-dimension differences.
+    """
     n = len(states)
     rng = np.random.default_rng(seed)
     shuffled = rng.permutation(n)
@@ -61,6 +88,15 @@ def evaluate_predictor_per_dimension(
     states_val: np.ndarray, actions_val: np.ndarray, next_states_val: np.ndarray,
     baseline_mean: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Per-state-dimension MSE and R^2 (against a predict-the-mean baseline) on a
+    held-out (states_val, actions_val, next_states_val) set. `baseline_mean`
+    should be the *training* set's per-dimension next_state mean (not the
+    validation set's own mean) so the baseline isn't computed from the same
+    data it's being judged against -- an R^2 of 0.0 means "no better than always
+    predicting the training-set average next-state value for this dimension,"
+    which is the honest bar a trajectory-following model needs to clear per
+    dimension, not just on average across the whole state space.
+    """
     model.eval()
     with torch.no_grad():
         prediction = model(
@@ -72,12 +108,28 @@ def evaluate_predictor_per_dimension(
 
     ss_res = np.sum((prediction - next_states_val) ** 2, axis=0)
     ss_tot = np.sum((next_states_val - baseline_mean) ** 2, axis=0)
+    # Guard against a degenerate all-identical validation column (ss_tot=0)
+    # rather than dividing by zero -- shouldn't happen with real trajectory data,
+    # but a NaN/inf R^2 would be a confusing way to find that out.
     r2_per_dim = np.where(ss_tot > 0, 1.0 - ss_res / np.where(ss_tot > 0, ss_tot, 1.0), np.nan)
 
     return mse_per_dim, r2_per_dim
 
 
 def save_predictor_weights(model: TrajectoryPredictor, path: str, action_channels: list[str] | None = None) -> None:
+    """Save the model's weights and optional action channel metadata to an npz file.
+
+    `action_channels` records the action channel order (e.g. the current patch's
+    ["vco_freq", "vco_fm", "vca_level"] or whatever action set was used during
+    training) that this model's action input was trained against. It's optional
+    (so existing callers/tests that only care about the weight arrays keep
+    working unchanged), but any real training run should pass it: without it,
+    nothing stops the model's action input vector being fed actions in the wrong
+    order at inference time, a silent-wrong-action failure mode that would look
+    like a working-but-wrong trajectory model rather than an error. Task 4's
+    TrajectoryTTInferenceEngine loads these weights and expects the same
+    W1/b1/W2/b2/W3/b3 (+ optional action_channels) keys.
+    """
     extra = {"action_channels": np.array(action_channels)} if action_channels is not None else {}
     np.savez(
         path,
