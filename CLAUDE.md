@@ -1217,3 +1217,217 @@ natural next step
 the moment either becomes available — this section exists so that step is
 remembered as outstanding, not assumed already done because the code
 merged and the tests are green.
+
+## Stage 2 capstone (2026-09-08): live novelty-search run against
+`sequencer_test.vcv` — 60/60 archive filled, one real mid-run PipeWire glitch
+caught and root-caused, not hidden
+
+Task 3 of the Stage 2 plan (`docs/superpowers/plans/
+2026-09-08-stage2-exploration.md`) — the capstone task, running the
+already-merged `novelty_archive.py`/`explore.py` (Tasks 1-2) for real
+against the live instrument for the first time.
+
+### Launch check found a new failure mode, not the documented one
+
+Nothing was running at session start (`pgrep -af "Rack2Free/Rack"` empty,
+`pw-link -l` showed no `vcv_loop` connections) even though the PipeWire
+*defaults* were already correctly set (`vcv_loop`/`vcv_loop.monitor`) —
+apparently left over from whenever the last session's Rack process exited.
+`log.txt` already ended in `"END"` (a clean prior exit), so the documented
+crash-recovery dialog wasn't expected to be an issue, and it wasn't.
+
+**What actually blocked the relaunch, three attempts in a row**: running
+`./Rack2Free/Rack patches/sequencer_test.vcv` from this repo's root (the
+natural cwd) reliably died after ~6-9s with exit code 1, logging nothing
+past `"Loading settings ...settings.json"` and spawning a zenity dialog
+with only generic GTK warnings visible in stdout — no crash-recovery
+question dialog, no window ever created (confirmed via `xwininfo -root
+-tree` showing no Rack/zenity surface at all). Fetching
+`VCVRack/Rack`'s actual `adapters/standalone.cpp` source (`gh api
+repos/VCVRack/Rack/contents/adapters/standalone.cpp`) pinned the real
+cause: right after `settings::load()` succeeds, there's an unlogged check
+—
+```cpp
+std::string resDir = asset::system("res");
+if (!system::isDirectory(resDir)) {
+    osdialog_message(OSDIALOG_ERROR, OSDIALOG_OK, ...); // standalone.resDir
+    exit(1);
+}
+```
+— and `asset::systemDir` defaults to **the process's cwd**, not the
+executable's own directory. Launching from the repo root means
+`asset::system("res")` resolves to `<repo root>/res`, which doesn't exist
+(`res/` only lives inside `Rack2Free/`), so this fires every time,
+*before* `logger::wasTruncated()` is ever checked (that check is much
+later in `main()`, after network/audio/MIDI/plugin/browser/library/UI
+init) — meaning the crash-recovery dialog and this resDir dialog are two
+different, easily-confused zenity failure modes, and this session hit the
+second one, not the first.
+
+**Fix, and why it wasn't obvious sooner**: `settings.json`'s own
+`recentPatchPaths` already encoded the answer
+(`"../patches/sequencer_test.vcv"`, a relative path with a leading `../`)
+— every prior session must have launched with **cwd = `Rack2Free/`**, not
+the repo root. `cd Rack2Free && LD_LIBRARY_PATH=. ./Rack
+../patches/sequencer_test.vcv` launched clean on the first try (full
+plugin/module loading log, "Running window" at 6.457s, all 8 MIDI-CAT
+channels present, screenshot-confirmed). Worth remembering explicitly:
+**always launch Rack with cwd set to `Rack2Free/`**, regardless of where
+the invoking shell started.
+
+Post-launch health re-check, same bar as every prior stage: `pw-link -l`
+showed `VCV Rack:{input,output}_{FL,FR}` cabled through `vcv_loop`/
+`vcv_loop.monitor` correctly, and a screenshot of the MIDI-CAT module
+confirmed `In: ALSA / Midi Through:Midi Through Port-0 14:0` resolved (`Out:
+(No device)`, expected/unused) with all 8 channel labels
+(`vco_freq`/`vcf_cutoff`/`vca_level`/`seq_tempo`/`sweep_rate`/
+`sweep_depth`/`filter_env_amount`/...) visible in the module's mapping
+list, and the `AUDIO` module showing `VCV_Loopback` selected.
+
+### The real run
+
+```
+python3 explore.py --config configs/sequencer_test.yaml \
+  --budget 200 --archive-size 60 --k-neighbors 5 \
+  --settle-time-s 0.5 --aggregate-window-s 3.0 --seed 0 \
+  --output data/sequencer_novelty_archive.npz
+```
+
+Backgrounded (`nohup ... & disown`, waited on via a `kill -0`-polling
+monitor rather than blocking foreground), per this project's established
+long-run pattern. Took ~11.65 minutes (699s) for 200 candidates (~3.5s
+each, matching the plan's estimate) — stdout was fully buffered (not a
+tty), so nothing appeared in the log file until the process actually
+exited; this was just Python's file-vs-tty buffering default, not a stall
+(confirmed via `ps`/CPU-time checks mid-run before deciding to just wait
+for the exit notification instead of chasing a false "no output" alarm).
+
+**Result: archive filled to the full 60/60**, from 105/200 accepted
+candidates (95 rejected as insufficiently novel — a healthy accept rate
+for a mutation-plus-random-restart search, not "everything gets in").
+Final novelty scores among the 60 kept members: **min 0.0389, max 0.6704,
+mean 0.1782**.
+
+### A real anomaly, caught and root-caused rather than reported as a bare "looks off"
+
+The last 59 of 200 evaluated candidates (indices 142-200) all show the
+*exact same* novelty score, `0.0776`, and all were rejected — a flatline,
+not just "mostly rejected." Investigated rather than shrugged off, since
+the task's own bar is to report (and understand, where possible)
+miscalibrated-looking behavior rather than wave it past:
+
+- **Root cause confirmed**: checking `pw-link -l` immediately after the
+  run finished showed `VCV Rack:{input,output}_*` now connected to
+  `alsa_output.pci-0000_10_00.1.hdmi-stereo` (the physical HDMI output) —
+  **not** `vcv_loop` — even though `pactl get-default-source` still said
+  `vcv_loop.monitor`. `pactl get-default-sink` had silently changed to the
+  HDMI device mid-run. `journalctl --user` around the transition
+  (`15:56:39`-`15:56:40`, ~7.65 minutes into the run — lining up almost
+  exactly with candidate ~141/200 at the observed ~3.5s/candidate pace)
+  showed `pipewire[1766]: mod.client-node: ... unknown peer ... fd:124`
+  messages, consistent with a stream reconnect event at that moment.
+- **The actual defect, found by checking one level deeper**:
+  `pactl list modules short | grep null` showed **two** separate
+  `module-null-sink sink_name=vcv_loop` instances loaded simultaneously
+  (module ids `536870913` and `536870914`) — leftover cruft from some
+  earlier session, not loaded by this one (Step 1's health check correctly
+  found an existing `vcv_loop` sink and skipped `load-module` per the
+  documented procedure). Two PipeWire sink objects sharing the same
+  `vcv_loop` name makes `pactl set-default-sink vcv_loop` an ambiguous
+  target; something (most plausibly one of the two identically-named
+  nodes going idle/`SUSPENDED` and PipeWire's routing policy resolving the
+  live stream to the next-highest-priority real device instead) flipped
+  the actual default over to the hardware sink partway through, silently,
+  with no error surfaced anywhere in Rack's own log.
+- **Effect on the saved archive**: none, as far as can be confirmed. The
+  archive was already full (60/60) by candidate 60, and the last
+  genuinely-accepted candidate was #141 (`score=0.1235`) — right at the
+  boundary of the drift. Candidates 142-200 read frozen/silent audio
+  (consistent with the HDMI output carrying nothing meaningful for
+  `sounddevice`/PipeWire to capture from `vcv_loop.monitor` once VCV's
+  stream moved away from it) and were correctly rejected as non-novel
+  every single time, rather than corrupting the archive with 59 copies of
+  a degenerate silent reading. The practical cost was **wasted budget, not
+  bad data**: roughly the last 30% of the 200-candidate budget was
+  uninformative.
+- **Not fixed at the root** (the two duplicate `module-null-sink vcv_loop`
+  module instances are still both loaded) — flagged here rather than
+  unloaded blind, the same "wasn't ours to remove outright" caution this
+  file already applies to the quarantined `Nozoid` plugin. Restored
+  `pactl set-default-sink vcv_loop` immediately after diagnosis so the
+  environment is left in the same healthy state Step 1 found it in.
+  Whoever runs a search like this next should `pactl list modules short |
+  grep null` before starting and consider unloading the duplicate instance
+  (by module id) if this recurs — a single clean `vcv_loop` sink is
+  probably what actually prevents the mid-run drift, not just restoring
+  the default pointer afterward.
+
+### Spot-check: three archived CV vectors, by their measured features
+
+Picked by novelty score (lowest, median, highest kept member) rather than
+cherry-picked, `[mean, std]` order is `[loudness, brightness, pitch]`:
+
+| member | `vca_level` | `vcf_cutoff` | loud `[mean,std]` | bright `[mean,std]` | pitch `[mean,std]` | score |
+|---|---|---|---|---|---|---|
+| lowest-novelty | 0.000 | 0.717 | `[0.0000, 0.0000]` | `[0.0000, 0.0000]` | `[0.0060, 0.0432]` | 0.0389 |
+| median-novelty | 0.823 | 0.913 | `[0.4322, 0.0410]` | `[0.0410, 0.1789]` | `[0.0334, 0.4834]` | 0.1420 |
+| highest-novelty | 0.462 | 1.000 | `[0.1337, 0.0048]` | `[0.9714, 0.0417]` | `[0.6660, 0.1311]` | 0.6704 |
+
+These are visibly, meaningfully different sounds, not just algorithmically
+distinct numbers: the lowest-novelty member is `vca_level=0.0` — silence,
+correctly measured as all-zero loudness/brightness with only noise-floor
+pitch jitter; the median member is loud with low/moderate brightness and a
+wide-swinging pitch (an active sequence at a bright-ish but not maxed
+cutoff); the highest-novelty member is moderately loud but **very**
+bright (`vcf_cutoff=1.0`, brightness mean 0.971 — the archive's most
+extreme brightness reading) with a wildly swinging pitch (std 0.666, the
+widest pitch spread of any of the three) — a harsh, warbling, near-fully-open-filter
+patch, about as far from "silence" as this instrument gets.
+
+### No clustering in a narrow band — coverage looks healthy
+
+Per-CV-channel spread across the 60 archived members (mean/std/min/max),
+checked specifically because the task called out "lands in a narrow band
+of one channel" as a failure shape to watch for:
+
+| channel | mean | std | min | max |
+|---|---|---|---|---|
+| `vco_freq` | 0.560 | 0.293 | 0.067 | 1.000 |
+| `vcf_cutoff` | 0.647 | 0.285 | 0.055 | 1.000 |
+| `vca_level` | 0.534 | 0.282 | 0.000 | 1.000 |
+| `seq_tempo` | 0.446 | 0.306 | 0.000 | 1.000 |
+| `sweep_rate` | 0.502 | 0.318 | 0.000 | 1.000 |
+| `sweep_depth` | 0.609 | 0.335 | 0.000 | 1.000 |
+| `filter_env_amount` | 0.574 | 0.284 | 0.000 | 1.000 |
+| `vcf_resonance` | 0.501 | 0.269 | 0.000 | 0.980 |
+
+Every channel's std is close to a uniform-on-`[0,1]` distribution's
+~0.289, and every channel spans nearly the full range — no channel is
+stuck in a narrow band. A `vca_level` histogram (10 bins across `[0,1]`)
+came out fairly even (4-8 members per bin, no empty or dominant bin). This
+looks like real, non-degenerate coverage of the CV space, not an artifact
+of the algorithm accepting almost anything.
+
+### Full regression check
+
+`python3 -m pytest -q` → **86 passed, 4 deselected**. `gozer run --chips 1
+--who "claude:tt-cv-agency" --reason "final Stage 2 suite check" --
+python3 -m pytest -q -m hardware` → **4 passed, 86 deselected**. No
+regressions; hardware count unchanged from every prior stage's bar of 4.
+
+### Net assessment
+
+The novelty search runs end-to-end against the real, live instrument and
+produces a full, non-degenerate 60-member archive with genuine CV-space
+coverage and genuinely different-sounding archived members, confirmed by
+direct feature-vector inspection rather than taken on the algorithm's
+word. The stage's own honesty bar is also where this run earned its keep
+twice: once by chasing down a *new* Rack-launch failure mode
+(`asset::systemDir` defaulting to cwd, not exe dir — read straight from
+Rack's own source rather than guessed) that isn't the crash-recovery
+dialog this file already documents, and again by root-causing a mid-run
+PipeWire default-sink drift (traced to two duplicate `module-null-sink
+vcv_loop` instances) down to its actual mechanism and actual (limited,
+budget-only) blast radius, rather than either hiding it or overstating it
+as archive corruption. Both are now documented so neither has to be
+re-discovered.

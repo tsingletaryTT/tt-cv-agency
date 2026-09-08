@@ -209,6 +209,22 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   patch, and reports the measured audio profile. No automated pass/fail
   grading — this is a report for a human to judge against what they asked
   for.
+- `novelty_archive.py` — Stage 2's `NoveltyArchive`: a bounded k-nearest-
+  neighbor novelty archive. Each candidate's novelty score is the mean
+  distance (in feature space) to its `k` nearest already-archived members;
+  a candidate is kept outright while the archive has room, and once full
+  only replaces whichever current member is least novel relative to the
+  rest (via leave-one-out scoring), and only if the new candidate beats
+  that minimum. No goal vector anywhere — this is exploration, not control.
+- `explore.py` — Stage 2's capstone CLI: runs a novelty search directly
+  against the running VCV Rack patch. Each iteration either samples a
+  fresh random CV point or mutates an existing archive member (Gaussian
+  noise, clipped to `[0, 1]`), applies it via the same `CVBackend`/MIDI-CAT
+  path as every other script here, reads back a windowed feature vector via
+  `features.read_aggregated_window`, scores it against `NoveltyArchive`, and
+  saves the final archive (`cv`, `features`, `novelty_scores`, `channels`)
+  to an `.npz` file. Produces a discovered library of meaningfully
+  different-sounding CV settings rather than chasing any single target.
 - `pyproject.toml` — pytest config; registers the `hardware` marker so tests
   that touch `ttnn` are skipped by default and only run explicitly, under a
   `gozer` lease.
