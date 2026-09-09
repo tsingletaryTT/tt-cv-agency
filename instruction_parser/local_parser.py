@@ -1,8 +1,8 @@
 import openai
 
 from instruction_parser.base import InstructionParser, RecipeParseError
-from instruction_parser.prompts import build_system_prompt
-from instruction_parser.schema import validate_recipe_json
+from instruction_parser.prompts import build_goal_system_prompt, build_system_prompt
+from instruction_parser.schema import GoalFeatures, validate_goal_json, validate_recipe_json
 
 
 def _build_json_schema(channels: dict[str, str]) -> dict:
@@ -77,3 +77,36 @@ class LocalInstructionParser(InstructionParser):
         # validate_recipe_json used there rather than reimplementing any
         # of its JSON-parsing/validation logic.
         return validate_recipe_json(content, channels)
+
+    def parse_goal(self, instruction: str) -> dict[str, float]:
+        client = openai.OpenAI(base_url=self._base_url, api_key=self._api_key)
+        try:
+            response = client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": build_goal_system_prompt()},
+                    {"role": "user", "content": instruction},
+                ],
+                # No hand-rolled schema dict needed here (unlike
+                # parse_recipe's _build_json_schema(channels)) -- GoalFeatures
+                # is a fixed, already-fully-specified Pydantic model
+                # (Field(ge=0,le=1) on every field, extra="forbid"), so its
+                # own .model_json_schema() already produces the right
+                # minimum/maximum/required/additionalProperties shape with
+                # nothing to hand-maintain in a second place.
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "goal_features", "schema": GoalFeatures.model_json_schema()},
+                },
+                max_tokens=1024,
+            )
+        except Exception as e:
+            raise RecipeParseError(f"local model API call failed: {e}") from e
+
+        if not response.choices or response.choices[0].message.content is None:
+            finish_reason = response.choices[0].finish_reason if response.choices else None
+            raise RecipeParseError(
+                f"local model returned no usable message content (finish_reason={finish_reason!r})"
+            )
+
+        return validate_goal_json(response.choices[0].message.content)

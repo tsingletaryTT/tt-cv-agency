@@ -110,3 +110,74 @@ def test_parse_recipe_includes_channel_descriptions_in_system_message():
     system_message = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "system")
     assert "pitch control" in system_message
     assert "loudness control" in system_message
+
+
+GOAL_VALUES = {
+    "loud_mean": 0.5, "loud_std": 0.1, "bright_mean": 0.3,
+    "bright_std": 0.05, "pitch_mean": 0.7, "pitch_std": 0.2,
+}
+
+
+def test_parse_goal_returns_dict_from_valid_response():
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.chat.completions.create.return_value = _mock_chat_response(
+            json.dumps(GOAL_VALUES)
+        )
+        result = parser.parse_goal("make it bright and sweeping")
+    assert result == GOAL_VALUES
+
+
+def test_parse_goal_raises_on_malformed_local_model_output():
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.chat.completions.create.return_value = _mock_chat_response(
+            "I think it should sound bright"  # not JSON at all
+        )
+        with pytest.raises(RecipeParseError):
+            parser.parse_goal("make it bright and sweeping")
+
+
+def test_parse_goal_raises_recipe_parse_error_on_empty_choices():
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        response = MagicMock()
+        response.choices = []
+        mock_client.chat.completions.create.return_value = response
+        with pytest.raises(RecipeParseError):
+            parser.parse_goal("make it bright and sweeping")
+
+
+def test_parse_goal_sends_fixed_goal_json_schema():
+    # Unlike parse_recipe's per-channel schema, this must be the SAME
+    # fixed set of 6 fields regardless of anything about the caller --
+    # there's no varying-channel-count case to sweep here.
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.chat.completions.create.return_value = _mock_chat_response(
+            json.dumps(GOAL_VALUES)
+        )
+        parser.parse_goal("anything")
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    schema = call_kwargs["response_format"]["json_schema"]["schema"]
+    assert set(schema["properties"].keys()) == set(GOAL_VALUES.keys())
+    assert set(schema["required"]) == set(GOAL_VALUES.keys())
+    assert schema["additionalProperties"] is False
+
+
+def test_parse_goal_includes_goal_dimension_explanation_in_system_message():
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.chat.completions.create.return_value = _mock_chat_response(
+            json.dumps(GOAL_VALUES)
+        )
+        parser.parse_goal("anything")
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    system_message = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "system")
+    assert "loudness" in system_message
+    assert "brightness" in system_message
