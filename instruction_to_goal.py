@@ -8,7 +8,6 @@ from instruction_parser.anthropic_parser import AnthropicInstructionParser
 from instruction_parser.local_parser import LocalInstructionParser
 from instruction_parser.schema import GOAL_DIMS
 from trajectory_control_loop import run_trajectory_control_loop
-from tt_trajectory_inference import TrajectoryTTInferenceEngine
 
 
 def main():
@@ -45,6 +44,11 @@ def main():
 
     backend = VCVRackBackend(args.config)
     try:
+        # Import here, not at module top level, to avoid touching hardware
+        # without a gozer lease when --help or other early-exit paths run.
+        # This matches the pattern in control_loop.py and trajectory_control_loop.py.
+        from tt_trajectory_inference import TrajectoryTTInferenceEngine
+
         engine = TrajectoryTTInferenceEngine(
             weights_path=args.weights_path, expected_channels=backend.channels(),
         )
