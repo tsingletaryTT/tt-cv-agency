@@ -1920,3 +1920,105 @@ next things worth doing if further improvement is wanted. The
 exactly as before — this result is not yet a clean apples-to-apples
 number against Stage 0's, even though it's now numerically better on
 both sides of that caveat.
+
+## Closing the loop (2026-09-09): `instruction_to_goal.py`, and a
+carried-forward gap — it has also never actually talked to an LLM
+
+A five-task plan (`.superpowers/sdd/2026-09-09-closing-the-loop/`) to
+finally connect Stage 1's instruction-parsing front end to Stage 3's
+trajectory-planning control loop, instead of only to `model.py`'s one-shot
+recipe apply. Tasks 1-4 (merged before this section was written) added:
+
+- `instruction_parser/schema.py`'s `GoalFeatures` — a **fixed** Pydantic
+  schema (`loud_mean`/`loud_std`/`bright_mean`/`bright_std`/`pitch_mean`/
+  `pitch_std`, each `[0,1]`) and `GOAL_DIMS`, its matching name-order list.
+  Unlike `CVRecipe` (rebuilt per call from whatever channel dict a patch
+  happens to expose), this schema never changes — loudness/brightness/
+  pitch mean+std are measured the same way regardless of which `.vcv` is
+  running, so a goal expressed in feature space is patch-independent in a
+  way a CV recipe never was. `GOAL_DIMS`'s order is documented to match
+  `features.py`'s `extract_features_aggregated` interleaving exactly, so
+  `np.array([goal_dict[name] for name in GOAL_DIMS])` drops straight into
+  `run_trajectory_control_loop`'s `goal_features` with no reordering.
+- `instruction_parser/prompts.py`'s `build_goal_system_prompt` — a fixed
+  companion to the existing per-call `build_system_prompt`, needing no
+  `channels` argument for the same patch-independence reason.
+- `parse_goal(instruction) -> dict[str, float]` on both
+  `AnthropicInstructionParser` (via `client.messages.parse` with
+  `output_format=GoalFeatures`, same pattern as `parse_recipe`, relying on
+  the SDK's own schema enforcement rather than a redundant second
+  validation pass) and `LocalInstructionParser` (via
+  `instruction_parser.schema.validate_goal_json` against a raw JSON
+  response, the same shape as `validate_recipe_json` but against the fixed
+  schema instead of a per-call one).
+
+Task 5 (this section) added the capstone script tying it together,
+`instruction_to_goal.py`: parse an instruction into a goal dict via a
+chosen `InstructionParser.parse_goal` (`--llm anthropic|local`), convert
+it to a `GOAL_DIMS`-ordered `np.array`, then hand it to the *existing,
+unmodified* `run_trajectory_control_loop`/`TrajectoryTTInferenceEngine`
+from Stage 3 as `goal_features` — the same trajectory predictor + CEM
+planner every Stage 3 live run above already used, just now fed a goal
+that came from natural language instead of typed in on the command line.
+Prints the parsed goal (one line per `GOAL_DIMS` entry) before steering,
+and the final measured feature vector alongside the goal once the control
+loop returns. Relationship to `instruction_to_preset.py` (Stage 1's own
+capstone): same instruction-parsing front end and `--llm` choice, but a
+different back end and a different kind of target — that script parses a
+CV *recipe* and applies it once, this one parses a feature-space *goal*
+and lets Stage 3's planner close the loop over time.
+
+**What's verified**: `python3 instruction_to_goal.py --help` runs clean,
+confirming the full import chain (`backends.vcv_rack`,
+`instruction_parser.anthropic_parser`, `instruction_parser.local_parser`,
+`instruction_parser.schema`, `trajectory_control_loop`, and transitively
+`tt_trajectory_inference`/`cem_planner`) resolves with no stale import
+path, and that every CLI flag (`--config`, `--llm`, `--model`,
+`--base-url`, `--weights-path`, `--max-iterations`) parses cleanly,
+including the `--llm local` requires-both-`--base-url`-and-`--model`
+check. `GoalFeatures`/`GOAL_DIMS`, `build_goal_system_prompt`, and both
+providers' `parse_goal` are unit-tested against mocked LLM responses —
+schema validation (malformed JSON, out-of-range value, missing/extra key),
+both parsers' request-building, and the prompt builder's fixed (no
+`channels` argument) shape.
+
+**What's explicitly NOT verified — the same carried-forward gap Stage 1
+Task 6 already documented for `instruction_to_preset.py`, now also true
+for this script**: `instruction_to_goal.py` has never been run end-to-end
+against a real LLM, for the identical reason — this machine still has
+neither an `ANTHROPIC_API_KEY` env var nor an `ant auth login` profile
+configured, and no local OpenAI-compatible model server is running to
+point `--base-url` at. That means:
+- No real Anthropic API call has ever gone through
+  `AnthropicInstructionParser.parse_goal` from this script — only through
+  mocked `anthropic.Anthropic()` clients in tests.
+- No real local server has ever answered a `LocalInstructionParser.
+  parse_goal` call from this script either.
+- Consequently, nobody has yet seen a real model's actual goal-vector
+  choice for a real instruction (e.g. what `[loud_mean, loud_std,
+  bright_mean, bright_std, pitch_mean, pitch_std]` it picks for "make it
+  bright and steady"), nor whether Stage 3's trajectory control loop
+  actually steers the live patch toward that goal convincingly — the
+  whole point of closing this particular loop.
+
+**To close this gap**, whoever picks this up next needs exactly what
+Stage 1's own gap needed: an `ANTHROPIC_API_KEY` env var (or an `ant auth
+login` profile) to run `python3 instruction_to_goal.py "<instruction>"
+--llm anthropic`, or a running OpenAI-compatible local server plus its
+`--base-url` and `--model` (both required together, no default for
+`--llm local`) to run with `--llm local`. This section exists so that
+step is remembered as outstanding the moment either becomes available,
+not assumed already done because the code merged and the tests are green
+— the same discipline this project applied to Stage 1's identical gap.
+
+**Regression check**: `python3 -m pytest -q` → **138 passed, 7
+deselected** (unchanged from this plan's own baseline — Tasks 1-4 already
+grew the suite to 138 before this task, and this task added a script with
+no new tests of its own, only the existing mocked-LLM tests above from
+Tasks 1-4). `gozer run --chips 1 --who "claude:tt-cv-agency" --reason
+"final closing-the-loop suite check" -- python3 -m pytest -q -m hardware`
+→ **7 passed, 138 deselected** (unchanged — nothing in this plan touches
+`ttnn`; `instruction_to_goal.py` only reaches `tt_trajectory_inference.py`
+through an unmodified import, and that module's own `ttnn.open_device`
+call still only happens inside `TrajectoryTTInferenceEngine.__init__`, not
+at import time or during `--help`).

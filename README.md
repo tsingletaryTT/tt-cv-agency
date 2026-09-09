@@ -265,6 +265,22 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   vector to find the best next action, apply that action's CV delta, and
   repeat, skipping the (still-recorded) planning step entirely on
   iterations already within `convergence_threshold` of the goal.
+- `instruction_to_goal.py` — closing-the-loop's capstone CLI: parses a
+  natural-language instruction into a *feature-space* goal (via a chosen
+  `InstructionParser.parse_goal(instruction)` — `--llm anthropic|local`,
+  the same fixed `GoalFeatures`/`GOAL_DIMS` schema on both providers) and
+  steers the running patch toward it continuously via
+  `run_trajectory_control_loop`/`TrajectoryTTInferenceEngine`, printing the
+  parsed goal up front and the final measured feature vector once the loop
+  ends. Same instruction-parsing front end as `instruction_to_preset.py`,
+  but a different back end and a different kind of target: that script
+  parses a CV *recipe* and applies it once as a one-shot preset,
+  independent of what the patch happens to sound like already; this one
+  parses a *goal* in measured-feature space and lets the trajectory
+  predictor + CEM planner close the loop over time, the same way
+  `trajectory_control_loop.py`'s capstone runs already did against a
+  numeric goal vector — just with the goal itself now coming from an
+  instruction instead of typed in by hand.
 - `pyproject.toml` — pytest config; registers the `hardware` marker so tests
   that touch `ttnn` are skipped by default and only run explicitly, under a
   `gozer` lease.
