@@ -59,3 +59,23 @@ def test_trajectory_control_loop_records_one_state_per_iteration():
     assert len(history) == 5
     for entry in history:
         assert entry.shape == (6,)
+
+
+def test_trajectory_control_loop_does_not_truncate_history_when_converged_early():
+    backend = LinearFakeBackend(channel_names=["vco_freq", "vco_fm", "vca_level"])
+    goal = np.array([0.5, 0.0, 0.5, 0.0, 0.5, 0.0])
+    history = run_trajectory_control_loop(
+        backend, predict_fn=additive_predict_fn, goal_features=goal,
+        horizon=1, n_candidates=10, n_elite=2, n_iterations=1,
+        sample_rate=48000, control_interval_s=0.0, max_iterations=5,
+        # convergence_threshold=10.0 is guaranteed satisfied on the very
+        # first read (no real feature vector is ever 10.0 away from a
+        # goal in [0,1]-normalized feature space) -- every iteration
+        # takes the early-exit ("continue") branch without ever calling
+        # cem_plan. This is exactly the path a continue-vs-break
+        # regression would silently break: history would truncate to
+        # length 1 instead of running the full max_iterations.
+        convergence_threshold=10.0,
+        aggregate_window_s=0.1, seed=0,
+    )
+    assert len(history) == 5
