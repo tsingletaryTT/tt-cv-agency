@@ -44,7 +44,12 @@ class AnthropicInstructionParser(InstructionParser):
         try:
             response = client.messages.parse(
                 model=self._model,
-                max_tokens=1024,
+                # Higher than parse_recipe's 1024: on claude-opus-5, adaptive
+                # thinking is on by default and its tokens count against
+                # max_tokens, so a real call could exhaust the budget on
+                # reasoning before ever emitting the 6-float JSON response.
+                # 4096 gives plenty of headroom for that plus the response.
+                max_tokens=4096,
                 system=build_goal_system_prompt(),
                 messages=[{"role": "user", "content": instruction}],
                 output_format=GoalFeatures,
@@ -53,6 +58,10 @@ class AnthropicInstructionParser(InstructionParser):
             raise RecipeParseError(f"Anthropic API call failed: {e}") from e
 
         if response.parsed_output is None:
+            # A refusal (stop_reason == "refusal") or any other non-normal
+            # completion leaves parsed_output unset -- surface this as a
+            # clear RecipeParseError instead of an opaque AttributeError
+            # on the next line. Check response.stop_reason for the message.
             raise RecipeParseError(
                 f"Anthropic response had no parsed output (stop_reason={response.stop_reason!r})"
             )

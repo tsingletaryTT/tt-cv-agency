@@ -41,7 +41,12 @@ GOAL_SYSTEM_PREAMBLE = (
     "Example: 'a steady, dark, low drone' -> low pitch_mean, low "
     "bright_mean, low std on everything. 'a bright, sweeping, squelchy "
     "sequence' -> high bright_mean AND high bright_std (the sweep), high "
-    "pitch_std (the moving sequence)."
+    "pitch_std (the moving sequence).\n"
+    "Calibration note: in practice, std values for this kind of instrument "
+    "rarely exceed about 0.3 -- a std around 0.15 already represents a "
+    "strongly moving/sweeping quality, and 0.02 is essentially steady. "
+    "Avoid requesting std values much above 0.3 unless you specifically "
+    "intend an extreme, likely-unreachable target."
 )
 
 

@@ -1969,18 +1969,48 @@ CV *recipe* and applies it once, this one parses a feature-space *goal*
 and lets Stage 3's planner close the loop over time.
 
 **What's verified**: `python3 instruction_to_goal.py --help` runs clean,
-confirming the full import chain (`backends.vcv_rack`,
+confirming the import chain up through argument parsing (`backends.vcv_rack`,
 `instruction_parser.anthropic_parser`, `instruction_parser.local_parser`,
-`instruction_parser.schema`, `trajectory_control_loop`, and transitively
-`tt_trajectory_inference`/`cem_planner`) resolves with no stale import
-path, and that every CLI flag (`--config`, `--llm`, `--model`,
+`instruction_parser.schema`, `trajectory_control_loop`) resolves with no
+stale import path, and that every CLI flag (`--config`, `--llm`, `--model`,
 `--base-url`, `--weights-path`, `--max-iterations`) parses cleanly,
 including the `--llm local` requires-both-`--base-url`-and-`--model`
-check. `GoalFeatures`/`GOAL_DIMS`, `build_goal_system_prompt`, and both
+check. **`--help` deliberately does NOT reach `tt_trajectory_inference`/
+`ttnn` at all** — that import is deferred inside `main()`, after argparse
+has already had a chance to exit on `--help` (see the incident note
+below for why this matters and wasn't true of this script's first draft).
+`GoalFeatures`/`GOAL_DIMS`, `build_goal_system_prompt`, and both
 providers' `parse_goal` are unit-tested against mocked LLM responses —
 schema validation (malformed JSON, out-of-range value, missing/extra key),
 both parsers' request-building, and the prompt builder's fixed (no
 `channels` argument) shape.
+
+**Incident, caught and fixed (2026-09-09)**: this script's first draft
+imported `TrajectoryTTInferenceEngine` from `tt_trajectory_inference` at
+module scope, alongside its other top-level imports. Running `--help` as
+this task's own verification step actually triggered an unleased `import
+ttnn` — confirmed by the `ttnn.CONFIG` debug line it printed to stdout,
+not merely suspected. The reasoning that let this slip through was
+exactly backwards: `ttnn.open_device` only happens inside
+`TrajectoryTTInferenceEngine.__init__`, so it seemed safe to assume
+nothing device-related could happen before that ever ran. But the real
+rule (already documented in this project's own global `CLAUDE.md`) is
+that a **module-level `import ttnn` is itself an unleased device touch**,
+independent of whether `open_device` is ever called — `import ttnn`
+initializes the runtime and touches `/dev/tenstorrent/*` on its own.
+Caught by a task review that specifically checked this file's import
+placement against the established pattern already used by
+`control_loop.py`/`trajectory_control_loop.py`, both of which defer this
+exact import inside their `if __name__ == "__main__":` block rather than
+importing it at module top level. **Fix**: moved the
+`from tt_trajectory_inference import TrajectoryTTInferenceEngine` import
+inside `main()`, after `argparse.parse_args()` has already had its chance
+to exit on `--help` (see `instruction_to_goal.py`, commit `1d1bdaf`).
+**Outcome**: `gozer status` confirmed all 4 chips clean/`FREE` immediately
+after — no lasting harm, but a real, previously-bitten failure mode
+(the global `CLAUDE.md`'s own "five agents on one project ran an unleased
+import for the same reason" note) recurring on this exact project despite
+being documented elsewhere.
 
 **What's explicitly NOT verified — the same carried-forward gap Stage 1
 Task 6 already documented for `instruction_to_preset.py`, now also true
@@ -2018,7 +2048,7 @@ no new tests of its own, only the existing mocked-LLM tests above from
 Tasks 1-4). `gozer run --chips 1 --who "claude:tt-cv-agency" --reason
 "final closing-the-loop suite check" -- python3 -m pytest -q -m hardware`
 → **7 passed, 138 deselected** (unchanged — nothing in this plan touches
-`ttnn`; `instruction_to_goal.py` only reaches `tt_trajectory_inference.py`
-through an unmodified import, and that module's own `ttnn.open_device`
-call still only happens inside `TrajectoryTTInferenceEngine.__init__`, not
-at import time or during `--help`).
+`ttnn`; after the incident fix above, `instruction_to_goal.py` only
+reaches `tt_trajectory_inference.py`/`ttnn` inside `main()`, past
+argparse's own `--help` exit point, so `--help` and module import alone
+never touch hardware).

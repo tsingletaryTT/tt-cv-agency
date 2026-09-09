@@ -98,7 +98,11 @@ class LocalInstructionParser(InstructionParser):
                     "type": "json_schema",
                     "json_schema": {"name": "goal_features", "schema": GoalFeatures.model_json_schema()},
                 },
-                max_tokens=1024,
+                # Higher than parse_recipe's 1024, for parity with
+                # AnthropicInstructionParser.parse_goal: some OpenAI-
+                # compatible servers also run adaptive/extended thinking by
+                # default, and its tokens count against this budget too.
+                max_tokens=4096,
             )
         except Exception as e:
             raise RecipeParseError(f"local model API call failed: {e}") from e

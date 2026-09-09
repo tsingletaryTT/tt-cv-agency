@@ -140,6 +140,38 @@ def test_parse_goal_raises_on_malformed_local_model_output():
             parser.parse_goal("make it bright and sweeping")
 
 
+def test_parse_goal_raises_recipe_parse_error_on_none_content():
+    # Mirrors test_parse_recipe_raises_recipe_parse_error_on_none_content:
+    # a tool_calls-only message or empty completion leaves message.content
+    # as None. Must surface as RecipeParseError, not a raw TypeError from
+    # json.loads(None).
+    parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None), finish_reason="tool_calls")]
+        mock_client.chat.completions.create.return_value = response
+        with pytest.raises(RecipeParseError):
+            parser.parse_goal("make it bright and sweeping")
+
+
+def test_parse_goal_uses_configured_base_url_and_model():
+    # Mirrors test_parse_recipe_uses_configured_base_url_and_model --
+    # confirms parse_goal routes through the same configured client/model,
+    # not just parse_recipe.
+    parser = LocalInstructionParser(base_url="http://myhost:1234/v1", model="my-local-model")
+    with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.chat.completions.create.return_value = _mock_chat_response(
+            json.dumps(GOAL_VALUES)
+        )
+        parser.parse_goal("anything")
+    _, init_kwargs = MockClient.call_args
+    assert init_kwargs["base_url"] == "http://myhost:1234/v1"
+    _, call_kwargs = mock_client.chat.completions.create.call_args
+    assert call_kwargs["model"] == "my-local-model"
+
+
 def test_parse_goal_raises_recipe_parse_error_on_empty_choices():
     parser = LocalInstructionParser(base_url="http://localhost:8000/v1", model="local-model")
     with patch("instruction_parser.local_parser.openai.OpenAI") as MockClient:

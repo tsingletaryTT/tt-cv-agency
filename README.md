@@ -194,15 +194,25 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   (read audio → extract features → infer target CV → step toward it → write
   CV → repeat) against any `CVBackend`.
 - `instruction_parser/` — Stage 1's LLM-agnostic instruction-to-recipe
-  abstraction: `base.py` (the `InstructionParser` abstract interface and
-  `RecipeParseError`), `schema.py` (shared per-call Pydantic recipe model +
-  JSON validation), `prompts.py` (the shared system-prompt builder),
-  `anthropic_parser.py` (`AnthropicInstructionParser`, via
-  `client.messages.parse`), and `local_parser.py`
-  (`LocalInstructionParser`, any OpenAI-compatible server via the `openai`
-  SDK). Neither parser implementation hardcodes a channel list/count/name —
-  both build their schema/prompt from whatever `channels` dict is passed at
-  call time.
+  abstraction, extended by the closing-the-loop plan into a second,
+  goal-parsing abstraction alongside it: `base.py` (the `InstructionParser`
+  abstract interface, with two abstract methods — `parse_recipe` and
+  `parse_goal` — plus `RecipeParseError`), `schema.py` (both the per-call
+  `CVRecipe` Pydantic model + JSON validation used by `parse_recipe`, and
+  the fixed `GoalFeatures` schema + `GOAL_DIMS` name-order tuple + JSON
+  validation used by `parse_goal`), `prompts.py` (two system-prompt
+  builders — `build_system_prompt(channels)` for recipes, and the
+  patch-independent `build_goal_system_prompt()` for goals),
+  `anthropic_parser.py` (`AnthropicInstructionParser`, implementing both
+  methods via `client.messages.parse`), and `local_parser.py`
+  (`LocalInstructionParser`, implementing both methods against any
+  OpenAI-compatible server via the `openai` SDK). Neither parser
+  implementation hardcodes a channel list/count/name for `parse_recipe` —
+  both build that schema/prompt from whatever `channels` dict is passed at
+  call time — while `parse_goal`'s schema/prompt are fixed and
+  patch-independent, since the 6 feature dimensions they describe (see
+  `GoalFeatures`) are measured the same way regardless of which `.vcv` is
+  running.
 - `instruction_to_preset.py` — Stage 1's capstone CLI: parses a
   natural-language instruction into a CV recipe via a chosen
   `InstructionParser` (`--llm anthropic|local`), applies it to the running

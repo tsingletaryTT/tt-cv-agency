@@ -1,7 +1,9 @@
 import json
+import numpy as np
 import pytest
 from instruction_parser.base import RecipeParseError
 from instruction_parser.schema import build_recipe_model, validate_recipe_json
+from features import extract_features_aggregated
 
 CHANNELS = {"vco_freq": "pitch", "vca_level": "loudness"}
 
@@ -61,13 +63,37 @@ GOAL_VALUES = {
 }
 
 
+def test_goal_dims_matches_goal_features_field_order():
+    # GoalFeatures.model_dump() (relied on by AnthropicInstructionParser
+    # .parse_goal) iterates fields in declaration order -- GOAL_DIMS must
+    # pin that same order, or a goal dict's values would silently land in
+    # the wrong np.array slot when zipped against GOAL_DIMS elsewhere.
+    assert list(GoalFeatures.model_fields.keys()) == list(GOAL_DIMS)
+
+
 def test_goal_dims_matches_features_py_interleaved_order():
-    # features.py's extract_features_aggregated documents its output
-    # order as [mean(loudness), std(loudness), mean(brightness),
-    # std(brightness), mean(pitch), std(pitch)] -- GOAL_DIMS must match
-    # exactly, so np.array([goal[name] for name in GOAL_DIMS]) is
-    # directly usable as run_trajectory_control_loop's goal_features.
-    assert GOAL_DIMS == ["loud_mean", "loud_std", "bright_mean", "bright_std", "pitch_mean", "pitch_std"]
+    # Real behavioral proof (not a second hardcoded copy of the same
+    # literal) that GOAL_DIMS's order matches extract_features_aggregated's
+    # actual interleaving: build blocks where ONLY loudness varies
+    # block-to-block (same amplitude-modulation pattern already used in
+    # tests/test_features.py's test_extract_features_aggregated_detects_modulation),
+    # holding frequency (and therefore brightness/pitch) constant, and
+    # confirm the resulting nonzero std lands at GOAL_DIMS's "loud_std"
+    # index specifically, not at "bright_std" or "pitch_std".
+    sample_rate = 48000
+    t = np.arange(1024) / sample_rate
+    modulated_blocks = [
+        (0.1 + 0.4 * (i % 2)) * np.sin(2 * np.pi * 220 * t) for i in range(8)
+    ]
+    result = extract_features_aggregated(modulated_blocks, sample_rate)
+
+    loud_std_value = result[GOAL_DIMS.index("loud_std")]
+    bright_std_value = result[GOAL_DIMS.index("bright_std")]
+    pitch_std_value = result[GOAL_DIMS.index("pitch_std")]
+
+    assert loud_std_value > 0.01
+    assert bright_std_value < loud_std_value
+    assert pitch_std_value < loud_std_value
 
 
 def test_goal_features_accepts_valid_values():

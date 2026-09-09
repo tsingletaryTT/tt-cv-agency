@@ -4,6 +4,7 @@ import pytest
 
 from instruction_parser.anthropic_parser import AnthropicInstructionParser
 from instruction_parser.base import RecipeParseError
+from instruction_parser.prompts import build_goal_system_prompt
 
 CHANNELS = {"vco_freq": "pitch", "vca_level": "loudness"}
 
@@ -91,6 +92,20 @@ def test_parse_goal_uses_configured_model():
         parser.parse_goal("anything")
     _, kwargs = mock_client.messages.parse.call_args
     assert kwargs["model"] == "claude-sonnet-5"
+
+
+def test_parse_goal_uses_goal_system_prompt():
+    # Unlike parse_recipe (a per-call prompt built from a channels dict),
+    # parse_goal's system prompt is the fixed build_goal_system_prompt()
+    # output -- confirm the call actually uses it, the same way the local
+    # parser's tests already assert on system=/message content.
+    parser = AnthropicInstructionParser()
+    with patch("instruction_parser.anthropic_parser.anthropic.Anthropic") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.messages.parse.return_value = _mock_parsed_response(**GOAL_VALUES)
+        parser.parse_goal("anything")
+    _, kwargs = mock_client.messages.parse.call_args
+    assert kwargs["system"] == build_goal_system_prompt()
 
 
 def test_parse_goal_raises_recipe_parse_error_on_refusal():

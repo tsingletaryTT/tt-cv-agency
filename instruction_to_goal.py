@@ -32,6 +32,12 @@ def main():
     parser.add_argument("--max-iterations", type=int, default=100)
     args = parser.parse_args()
 
+    if args.max_iterations < 1:
+        # run_trajectory_control_loop returns an empty history list when it
+        # runs zero iterations, and history[-1] below would raise a raw
+        # IndexError -- fail with a clear CLI error instead.
+        parser.error("--max-iterations must be at least 1")
+
     if args.llm == "anthropic":
         instruction_parser = AnthropicInstructionParser(model=args.model or "claude-opus-5")
     else:
