@@ -1629,3 +1629,201 @@ rollout not being caught by single-step held-out R² — is flagged as a
 concrete, testable hypothesis for a future pass (e.g. directly comparing
 1-step vs. 5-step-ahead rollout error against held-out real trajectories),
 not asserted as confirmed.
+
+## Stage 3 final-review correction: the real explanation for the worse-than-baseline result
+
+A final whole-branch review of the completed Stage 3 plan dug into the
+capstone's one hedged hypothesis above (compounding per-step model bias
+across the CEM rollout) and found it is **not** the dominant cause. The
+real explanation is several independent, smaller issues stacking up, the
+biggest of which was never identified above at all: the goal the live run
+asked for is barely inside the training data's coverage. None of this is a
+code bug — `trajectory_collection.py`, `trajectory_model.py`,
+`cem_planner.py`, `tt_trajectory_inference.py`, and
+`trajectory_control_loop.py` were all independently re-verified against
+their own briefs and found correct. What follows is what an independent
+final-review pass found instead, with its own reproduced numbers, in
+priority order by how much each one actually explains.
+
+### 1. The training data barely covers the goal region — the dominant, previously-unidentified cause
+
+An independent final-review pass checked how close the 600 collected
+training transitions actually come to the live run's goal (`[0.5, 0.05,
+0.5, 0.1, 0.5, 0.05]`): only **1 of 600** training states lies within 0.15
+of the goal across all 6 dimensions simultaneously; the single nearest
+training state is **0.193** away; the **median** distance across all 600
+is **0.567**. That's not a dataset that happens to be thin near the goal —
+it's a dataset that's mostly somewhere else entirely.
+
+The per-dimension pattern lines up with the capstone's own "mixed, not
+uniformly worse" result exactly. The dimensions that *improved* over Stage
+0 (`loud_mean`, `loud_std`, `bright_std`) are precisely the ones with high
+training coverage near their goal value (roughly 10-100% of transitions
+within a reasonable band); the dimension with the single largest
+regression, `bright_mean` (0.115 → 0.223 absolute error, the biggest
+contributor to the worse overall norm), has only **~4.5%** training
+coverage near its goal value. The model can't plan a good route through
+territory it's never seen.
+
+The mechanism traces back two stages: Stage 2's novelty-search archive
+(used by `trajectory_collection.py`'s `__main__` to seed episode starts,
+see `trajectory_collection.py`) optimized purely for *diversity* between
+archive members, which produced many near-silent (`vca_level≈0`) starting
+points among its 60 members. 10-step episodes bounded at `max_action=0.15`
+per step can't travel far from those corners in only 10 steps — so the
+600-transition dataset ends up dense in "boring"/near-silent regions and
+sparse in the bright, loud region this particular goal actually asks for.
+This is a genuine finding about the *pipeline*, not about any one module:
+Stage 2's archive did exactly what it was built to do (maximize
+diversity), and Stage 3's collection script did exactly what its own brief
+asked (seed from that archive) — nothing downstream of either was told the
+eventual goal would live in a sparse corner of the result.
+
+### 2. The reported R² was scored against a baseline too weak to support "strong fit"
+
+The capstone's held-out R² table (0.87-0.96 on the three `mean`
+dimensions) was scored only against a predict-the-training-mean baseline.
+For a *forward dynamics* model this is a soft bar: consecutive windowed
+feature reads are strongly autocorrelated, so a large share of "the model
+beat the mean" is really just "the model learned that states don't change
+much between reads" — a fact persistence (`next_state = state`, zero
+parameters, no action term at all) captures for free. The honest baseline
+for a forward-dynamics model is persistence, and a trained model needs to
+be judged against **both**.
+
+Part B of this fix pass added `evaluate_persistence_baseline_per_dimension`
+to `trajectory_model.py` and re-ran training on the same, untouched
+`data/sequencer_trajectory_dataset.npz` (480/120 train/val split, same
+seed). The actual re-run numbers:
+
+| state dim | val MSE | val R² (vs. mean) | persistence R² |
+|---|---|---|---|
+| `loud_mean` | 0.0015 | 0.9598 | 0.9105 |
+| `loud_std` | 0.0003 | 0.3524 | 0.7393 |
+| `bright_mean` | 0.0018 | 0.9590 | 0.8309 |
+| `bright_std` | 0.0006 | 0.3500 | 0.4379 |
+| `pitch_mean` | 0.0085 | 0.8425 | 0.8015 |
+| `pitch_std` | 0.0021 | 0.2299 | -0.0700 |
+
+Against the honest baseline, the picture changes a lot. On the three
+`mean` dimensions the trained model does beat persistence, but by a modest
+margin, not the wide gap the mean-baseline table implied (`loud_mean`
+0.9598 vs. 0.9105, `bright_mean` 0.9590 vs. 0.8309, `pitch_mean` 0.8425
+vs. 0.8015) — real learned signal, but the training-mean-only table
+overstated how much of it there was. On the three `std` dimensions the
+model is at or below persistence (`loud_std` 0.3524 vs. **0.7393** —
+persistence is clearly better; `bright_std` 0.3500 vs. 0.4379 — persistence
+still ahead; `pitch_std` 0.2299 vs. **-0.0700** — the one case where the
+model clearly beats persistence, because persistence itself is unusually
+bad here). So "the model learned its target well" was true mainly for the
+`mean` dimensions and mostly false for `std` — a materially more honest
+picture than the capstone's original table conveyed. This is a plan/spec
+gap (the spec mandated the training-mean baseline only), not an
+implementation bug — `trajectory_model.py` did exactly what its brief
+asked.
+
+### 3. The model's action gain is over-scaled relative to what the instrument can actually do
+
+A full-range action-sweep test against the trained model found its
+response to actions is roughly **3-6x larger**, per dimension, than the
+real observed per-step movement in the actual training data — e.g.
+`bright_mean`: the model believes it has ~0.282 of authority per max
+action, but the real observed movement in the collected data is only
+~0.050 (a ~5.6x over-scale); `pitch_mean` is over-scaled ~3.3x; the `std`
+dimensions are over-scaled 1.8-3.5x. With only 480 training rows spread
+across an 8-dimensional action space and an unregularized 32-hidden-unit
+MLP, the model had every opportunity to absorb measurement noise (the
+3-second aggregation window's own sampling noise, sequencer phase at
+read-time, near-silence discontinuities) into the action term rather than
+learning the action's true, smaller magnitude. This is a data/model-capacity
+limitation, not a bug — the review confirmed the model is **not**
+action-blind (zeroing the action input measurably worsens held-out error,
+so the action signal is real), just miscalibrated in magnitude.
+
+### 4. The live CEM search was badly under-sampled for its own search dimension
+
+`trajectory_control_loop.py`'s defaults give `cem_plan` a `horizon=5 ×
+action_dim=8` = 40-dimensional continuous search, with only
+`n_candidates=200`, `n_elite=20`, `n_iterations=3` to search it. The
+review ran `cem_plan` 10 times against an identical state/goal, varying
+only the RNG seed, and found **5 of the 8** CV channels show seed-to-seed
+noise in the returned action that exceeds the actual signal — i.e. at this
+configuration, the planner is effectively returning a near-random draw on
+most channels, not a converged plan.
+
+Worth noting: `cem_planner.py`'s own unit tests only validate the
+algorithm at 1-2 search dimensions, with a much larger *relative* search
+budget (500 candidates / 8 iterations for that tiny a space). Those tests
+correctly prove the CEM algorithm itself is implemented right — they say
+nothing about whether it finds good plans at the dimensionality production
+actually runs it at (40-D), and it doesn't, at this sample budget.
+
+### 5. The headline 0.222-vs-0.314 comparison is confounded, not apples-to-apples
+
+Two separate issues stack on top of the above, independent of both the
+data-coverage and search-budget problems:
+
+* **Different measurement windows.** Stage 0's `control_loop.py` defaults
+  to `aggregate_window_s=5.0`; Stage 3's `trajectory_control_loop.py`
+  defaults to `3.0`. That's a genuinely different measurement instrument
+  for a sequencer patch's mean/std features, not a detail that washes out.
+* **A converged number compared to a non-converged one.** Stage 0's
+  number is a true fixed point — its control law does geometric
+  `step_fraction`-based convergence toward a constant target, so
+  `history[-1]` really is "where it settled." Stage 3's control loop has
+  no damping and replans from scratch every iteration with 5 of 8 channels
+  effectively noise (per point 4 above), so its measured "final" value is
+  one draw from a walk that never settles, not a converged value.
+
+Comparing `history[-1]` from both treats two different kinds of
+quantities — a fixed point and one sample from an unconverged random walk
+— as though they were the same thing. The 0.222-vs-0.314 comparison is
+real data, but it isn't the controlled before/after comparison it reads
+as.
+
+### 6. Ruled out, quantitatively: bfloat16 precision compounding across the 5-step rollout
+
+The capstone's own hedge — that per-step model bias compounds across the
+5-step CEM rollout — pointed at the right *shape* of problem
+(compounding error across steps) but the review found the specific
+bfloat16-precision version of that story is not the cause. Simulating
+bf16 rounding at every op boundary through 5 chained forward passes, the
+divergence from fp32 grows sub-linearly and reaches only **~0.0044** by
+step 5 — about **1.4%** of the observed 0.314 error, two orders of
+magnitude too small to explain the result. (The same check found the
+`tt_trajectory_inference.py` hardware test's tolerance, `atol=0.1`, is
+13-50x looser than this real simulated error and could hide an actual
+broken-matmul bug rather than just bfloat16 rounding — tightened in Part C
+of this fix pass below.)
+
+### Net assessment
+
+The six Stage 3 modules contain no correctness bug — action semantics,
+channel-order provenance, and the CEM algorithm itself were all
+independently re-verified and are implemented as specified. But the
+pipeline's training data doesn't cover the region it was asked to control,
+its action-gain calibration and CEM search budget are both undersized for
+the problem's real dimensionality, and the baseline comparison to Stage 0
+was measured with two different instruments (different aggregation
+window, converged-vs-unconverged quantities). None of this makes Stage 3 a
+failure — the modules do what their briefs asked, correctly — but it does
+mean the capstone's headline comparison isn't the clean win-or-lose signal
+it was reported as, and it identifies exactly what Stage 4 (or a future
+revisit) needs to fix, in priority order:
+
+1. Collect trajectory data with episode starts that actually span the
+   goal region, not just Stage 2's diversity archive.
+2. Report a persistence baseline alongside R² by default (done in this
+   fix, see Part B / `evaluate_persistence_baseline_per_dimension`).
+3. Either raise CEM's `n_iterations`/`n_candidates` substantially, or
+   reduce `horizon`/`action_dim` search burden so the sample budget
+   matches the search dimension — and add a CEM test at production-scale
+   dimensionality (today it exists only at toy scale).
+4. Clip rolled states to `[0,1]` in `cem_plan` and thread `current_cv`
+   through so cumulative multi-step actions are checked against real
+   headroom, not just each individual step's own clip (documented as
+   known scope in Part D of this fix pass, not yet fixed).
+5. Add damping/step-size decay to `trajectory_control_loop.py` so it can
+   settle instead of random-walking.
+6. Align `aggregate_window_s` between the two control loops before
+   drawing any future before/after comparison.

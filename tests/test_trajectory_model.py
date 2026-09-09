@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 from trajectory_model import (
-    TrajectoryPredictor, evaluate_predictor_per_dimension, save_predictor_weights,
+    TrajectoryPredictor, evaluate_persistence_baseline_per_dimension,
+    evaluate_predictor_per_dimension, save_predictor_weights,
     train_predictor, train_val_split_trajectories,
 )
 
@@ -117,6 +118,25 @@ def test_evaluate_predictor_per_dimension_reports_zero_r2_for_mean_predicting_mo
     _, r2 = evaluate_predictor_per_dimension(model, states_val, actions_val, next_states_val, baseline_mean=baseline_mean)
 
     assert np.allclose(r2, 0.0, atol=1e-6)
+
+
+def test_train_predictor_accepts_custom_hidden_size():
+    rng = np.random.default_rng(0)
+    states = rng.uniform(0, 1, size=(50, 6))
+    actions = rng.uniform(-0.1, 0.1, size=(50, 8))
+    next_states = rng.uniform(0, 1, size=(50, 6))
+    model = train_predictor(states, actions, next_states, epochs=1, hidden=16)
+    assert model.fc1.out_features == 16
+    assert model.fc2.in_features == 16
+
+
+def test_evaluate_persistence_baseline_reports_perfect_r2_when_state_never_changes():
+    states_val = np.array([[0.5, 0.5], [0.3, 0.3]])
+    next_states_val = states_val.copy()
+    baseline_mean = np.array([0.4, 0.4])
+    mse, r2 = evaluate_persistence_baseline_per_dimension(states_val, next_states_val, baseline_mean=baseline_mean)
+    assert np.allclose(mse, 0.0, atol=1e-6)
+    assert np.allclose(r2, 1.0, atol=1e-6)
 
 
 def test_save_predictor_weights_writes_expected_arrays(tmp_path):

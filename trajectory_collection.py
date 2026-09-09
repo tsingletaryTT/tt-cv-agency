@@ -45,6 +45,13 @@ def collect_trajectories(
         for _ in range(episode_length):
             raw_delta = rng.uniform(-max_action, max_action, size=n_channels)
             next_cv = np.clip(current_cv + raw_delta, 0.0, 1.0)
+            # Log the post-clip delta (not the raw sampled draw) as the
+            # action -- when raw_delta would push a channel past its [0,1]
+            # CV boundary, the clip means what actually happened at that
+            # boundary is smaller than what was intended. Training data must
+            # reflect the real applied action, not the sampled-but-partially-
+            # discarded one, or the model would learn a systematically
+            # wrong action scale near the edges of CV range.
             applied_action = next_cv - current_cv
 
             for ch, value in zip(channels, next_cv):

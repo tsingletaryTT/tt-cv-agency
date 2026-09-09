@@ -30,15 +30,18 @@ class TrajectoryPredictor(nn.Module):
 
 def train_predictor(
     states: np.ndarray, actions: np.ndarray, next_states: np.ndarray,
-    epochs: int = 200, lr: float = 1e-3,
+    epochs: int = 200, lr: float = 1e-3, hidden: int = 32,
 ) -> TrajectoryPredictor:
     """Train a TrajectoryPredictor on a batch of (state, action, next_state) tuples.
 
     Performs full-batch gradient descent with the Adam optimizer and MSE loss.
     The state and action dimensions are inferred from the data shapes, allowing
     the same training function to work for any state/action dimensionality.
+    `hidden` is exposed (default unchanged at 32, matching every existing
+    caller's behavior) so a future dataset-size/capacity tradeoff can be
+    explored without editing this function again.
     """
-    model = TrajectoryPredictor(state_dim=states.shape[1], action_dim=actions.shape[1])
+    model = TrajectoryPredictor(state_dim=states.shape[1], action_dim=actions.shape[1], hidden=hidden)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
@@ -116,6 +119,27 @@ def evaluate_predictor_per_dimension(
     return mse_per_dim, r2_per_dim
 
 
+def evaluate_persistence_baseline_per_dimension(
+    states_val: np.ndarray, next_states_val: np.ndarray, baseline_mean: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Held-out per-dimension MSE/R^2 for the trivial 'next_state == state'
+    baseline (zero parameters, no action used at all). This matters
+    specifically for a forward dynamics model: states are strongly
+    autocorrelated step to step, so scoring only against a
+    predict-the-training-mean baseline (evaluate_predictor_per_dimension's
+    baseline) can make a model look like it's learned a lot when it's
+    really only capturing that states don't change much between reads --
+    a persistence baseline can score a high R^2 too, and a trained model
+    should be judged against BOTH. See baseline_mean's docstring on
+    evaluate_predictor_per_dimension for why it must come from the
+    training set, not the validation set."""
+    mse_per_dim = np.mean((states_val - next_states_val) ** 2, axis=0)
+    ss_res = np.sum((states_val - next_states_val) ** 2, axis=0)
+    ss_tot = np.sum((next_states_val - baseline_mean) ** 2, axis=0)
+    r2_per_dim = np.where(ss_tot > 0, 1.0 - ss_res / np.where(ss_tot > 0, ss_tot, 1.0), np.nan)
+    return mse_per_dim, r2_per_dim
+
+
 def save_predictor_weights(model: TrajectoryPredictor, path: str, action_channels: list[str] | None = None) -> None:
     """Save the model's weights and optional action channel metadata to an npz file.
 
@@ -156,12 +180,15 @@ if __name__ == "__main__":
 
     train_mean = ns_train.mean(axis=0)
     mse_per_dim, r2_per_dim = evaluate_predictor_per_dimension(model, s_val, a_val, ns_val, baseline_mean=train_mean)
+    persistence_mse, persistence_r2 = evaluate_persistence_baseline_per_dimension(
+        s_val, ns_val, baseline_mean=train_mean
+    )
 
     state_dim_names = ["loud_mean", "loud_std", "bright_mean", "bright_std", "pitch_mean", "pitch_std"]
     print(f"train/val split: {len(s_train)} train / {len(s_val)} held-out validation transitions")
-    print(f"{'state dim':<12} {'val MSE':>10} {'val R^2':>10}")
-    for name, mse, r2 in zip(state_dim_names, mse_per_dim, r2_per_dim):
-        print(f"{name:<12} {mse:>10.4f} {r2:>10.4f}")
+    print(f"{'state dim':<12} {'val MSE':>10} {'val R^2':>10} {'persist R^2':>12}")
+    for name, mse, r2, p_r2 in zip(state_dim_names, mse_per_dim, r2_per_dim, persistence_r2):
+        print(f"{name:<12} {mse:>10.4f} {r2:>10.4f} {p_r2:>12.4f}")
 
     save_predictor_weights(model, "data/sequencer_trajectory_model_weights.npz", action_channels=channels)
     print("saved trained predictor weights to data/sequencer_trajectory_model_weights.npz")

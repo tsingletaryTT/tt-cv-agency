@@ -31,10 +31,15 @@ def test_tt_trajectory_inference_matches_pytorch_reference(tmp_path):
         engine.close()
 
     assert result.shape == (4, 6)
-    # bfloat16 on-device precision -- same tolerance tt_inference.py's own
-    # equivalent test already established as generously-but-really covering
-    # this model size.
-    assert np.allclose(result, reference, atol=0.1)
+    # bfloat16 on-device precision -- a final-review pass simulated bf16
+    # rounding at every op boundary through this model's forward pass and
+    # found real error on the order of 0.002-0.008 mean/max for this model
+    # size. The original atol=0.1 (borrowed from tt_inference.py's own
+    # equivalent test) was 13-50x looser than that real error and could
+    # hide an actual broken matmul rather than just bfloat16 rounding.
+    # atol=0.02 keeps meaningful headroom above the real simulated error
+    # without being vacuous.
+    assert np.allclose(result, reference, atol=0.02)
 
 
 @pytest.mark.hardware
