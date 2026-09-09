@@ -225,6 +225,46 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   saves the final archive (`cv`, `features`, `novelty_scores`, `channels`)
   to an `.npz` file. Produces a discovered library of meaningfully
   different-sounding CV settings rather than chasing any single target.
+- `trajectory_collection.py` — Stage 3's rollout logger: instead of one
+  independent random CV setting per sample, steps the live patch through
+  short multi-step episodes (a start CV point, then a sequence of small
+  random deltas), logging each `(state, action, next_state)` transition —
+  the current windowed feature read, the actually-applied CV delta (after
+  clipping to `[0, 1]`), and the resulting next feature read. Episode
+  starts are seeded from Stage 2's `data/sequencer_novelty_archive.npz`
+  when present (cycling round-robin through its archived CV vectors) so
+  trajectories begin from points already known to sound meaningfully
+  different, falling back to uniform-random starts otherwise.
+- `trajectory_model.py` — `TrajectoryPredictor`: a 3-layer MLP mapping
+  `(state, action) -> next_state`, i.e. a learned one-step forward dynamics
+  model rather than `model.py`'s single-shot inverse (features → CV)
+  mapping. Same 80/20 train/val split and per-state-dimension held-out
+  MSE/R² discipline as `model.py`, reported against a predict-the-training-
+  mean baseline; `save_predictor_weights` records the action-channel order
+  the model was trained against so a later inference engine can verify it
+  wasn't fed actions in the wrong order.
+- `cem_planner.py` — `cem_plan`: a pure-numpy Cross-Entropy Method search
+  over multi-step action sequences. Samples a batch of candidate action
+  sequences from a Gaussian, rolls each one forward through a supplied
+  `predict_fn` (any `(states, actions) -> next_states` batched dynamics
+  model), scores each rollout's final state against a goal by negative
+  Euclidean distance, refits the sampling distribution to the elite
+  candidates, and repeats for a fixed number of iterations before
+  returning the first action of the best mean sequence found.
+- `tt_trajectory_inference.py` — `TrajectoryTTInferenceEngine`: loads a
+  trained `TrajectoryPredictor`'s weights and runs its forward pass
+  batched on a real Tenstorrent chip via `ttnn`, so `cem_plan` can score
+  hundreds of candidate rollouts per control step without falling back to
+  CPU PyTorch. Same channel-order-provenance check as `tt_inference.py` —
+  refuses to run if the loaded weights' recorded action-channel order
+  doesn't match the backend's current channels.
+- `trajectory_control_loop.py` — `run_trajectory_control_loop`: the
+  perceive-plan-act loop built on the trajectory model instead of a direct
+  inverse mapping — read the current windowed feature state, run `cem_plan`
+  against a learned forward-dynamics `predict_fn` and a goal feature
+  vector to find the best next action, apply that action's CV delta, and
+  repeat, skipping the (still-recorded) planning step entirely on
+  iterations already within `convergence_threshold` of the goal.
 - `pyproject.toml` — pytest config; registers the `hardware` marker so tests
   that touch `ttnn` are skipped by default and only run explicitly, under a
   `gozer` lease.

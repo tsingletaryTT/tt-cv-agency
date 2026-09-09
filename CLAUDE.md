@@ -1453,3 +1453,179 @@ vcv_loop` instances) down to its actual mechanism and actual (limited,
 budget-only) blast radius, rather than either hiding it or overstating it
 as archive corruption. Both are now documented so neither has to be
 re-discovered.
+
+## Stage 3 capstone (2026-09-08): live trajectory data collection, predictor
+training, and a CEM-planned control-loop run that converges *worse* than
+Stage 0's plain reflex model on the identical goal
+
+Task 6 of the Stage 3 plan (`.superpowers/sdd/2026-09-08-stage3-trajectory-
+control/task-6-brief.md`) — the capstone task, running the already-merged
+`trajectory_collection.py`/`trajectory_model.py`/`cem_planner.py`/
+`tt_trajectory_inference.py`/`trajectory_control_loop.py` (Tasks 1-5) for
+real against the live instrument for the first time.
+
+### Launch check: already healthy, no relaunch needed
+
+Unlike Stage 2's capstone, this session found VCV Rack already running
+correctly (pid confirmed live via `/proc/<pid>/exe` resolving to
+`.../Rack2Free/Rack`, not just a `pgrep -f` string match — worth being
+careful about here, since `pgrep -af "Rack2Free/Rack"` matches its own
+invoking shell command line and would otherwise falsely read as "found a
+process" even with nothing real running), launched with cwd=`Rack2Free/`
+per the documented fix, running `patches/sequencer_test.vcv`, autosaving
+normally (`~/.local/share/Rack2/log.txt` showed steady ~15s autosave
+cycles with no gaps), uptime already over an hour at session start.
+`pw-link -l` showed `VCV Rack:{input,output}_{FL,FR}` correctly cabled
+through `vcv_loop`/`vcv_loop.monitor`, `pactl get-default-sink`/
+`get-default-source` both correct (`vcv_loop`/`vcv_loop.monitor`). The same
+two duplicate `module-null-sink vcv_loop` module instances flagged in
+Stage 2's capstone (ids `536870913`/`536870914`) are still both loaded —
+unchanged, not touched, and did not cause any mid-run drift this time
+(re-checked immediately after both live runs below; sink/source were still
+correct). Skipped GUI/screenshot verification entirely, per this task's own
+scope note — the process/PipeWire checks alone were sufficient.
+
+### Real data collection: 600 transitions, seeded from Stage 2's archive
+
+```
+python3 trajectory_collection.py
+```
+
+Backgrounded (`nohup ... & disown`, waited on via a Monitor task rather than
+polling), per this project's established long-collection pattern. 60
+episodes × 10 steps against `configs/sequencer_test.yaml` (8 CV channels),
+episode starts cycling round-robin through Stage 2's 60-member
+`data/sequencer_novelty_archive.npz`, `max_action=0.15`,
+`settle_time_s=0.5`, `aggregate_window_s=3.0`. Finished cleanly in line
+with the plan's ~38-39 minute estimate: **saved 600 transitions** to
+`data/sequencer_trajectory_dataset.npz` (`states` `(600, 6)`, `actions`
+`(600, 8)`, `next_states` `(600, 6)`, no NaNs in any array).
+
+### Trained predictor: per-state-dimension held-out MSE/R²
+
+```
+python3 trajectory_model.py
+```
+
+80/20 train/val split (480/120 transitions), 500 epochs, against a
+predict-the-training-mean baseline:
+
+| state dim | held-out MSE | held-out R² |
+|---|---|---|
+| `loud_mean` | 0.0016 | **0.9576** |
+| `loud_std` | 0.0002 | 0.4759 |
+| `bright_mean` | 0.0031 | **0.9264** |
+| `bright_std` | 0.0005 | 0.4131 |
+| `pitch_mean` | 0.0071 | **0.8683** |
+| `pitch_std` | 0.0021 | 0.2339 |
+
+**Honest read: this trajectory model learned its target (predicting the
+*next* windowed feature read from the current one plus the applied CV
+delta) meaningfully better across the board than Stage 0's inverse model
+learned its own, harder target (predicting CV settings from features,
+across 8 output channels) at a comparable-order sample count.** The three
+`mean` dimensions are strong (R² 0.87-0.96) — a one-step forward-dynamics
+problem is an easier regression than inverting an 8-dimensional CV space
+from a 6-dimensional feature read, and a 600-sample dataset spread across
+6 output dimensions (vs. Stage 0's 300 samples across 8) also helps. The
+three `std` dimensions are consistently weaker (R² 0.23-0.48) than their
+paired `mean` dimensions — plausible and consistent with this project's
+established history rather than a fresh mystery: `sweep_rate` (an LFO
+rate) and `filter_env_amount`'s ADSR-gating limitation were already
+flagged in Stage 0's own capstone as channels whose dynamics move slowly
+relative to a single aggregation window, and the `std` of a windowed
+feature read is exactly the statistic a slow/gated modulation source would
+move least within one window — a harder sub-target than the window's
+mean, for the same reason those channels were already flagged as
+weak/near-invisible. `pitch_std`'s R² (0.23) is the weakest of the three
+`std` dimensions, consistent with pitch being the noisiest-estimated
+feature historically (see Phase 2's `estimate_pitch` bug history above).
+
+### Live control-loop run: converges, but *worse* than Stage 0's reflex model on the identical goal
+
+```
+gozer run --chips 1 --who "claude:tt-cv-agency" --reason "Stage 3 capstone: live trajectory control loop" -- \
+  python3 trajectory_control_loop.py 0.5 0.05 0.5 0.1 0.5 0.05
+```
+
+Same 6-dim goal (`[loud_mean, loud_std, bright_mean, bright_std, pitch_mean,
+pitch_std] = [0.5, 0.05, 0.5, 0.1, 0.5, 0.05]`) as Stage 0's own capstone
+control-loop run against this same patch, deliberately — a fair before/after
+comparison against that reflex-model result on the identical goal. Ran
+cleanly against real hardware (`ttnn` device opened, JIT cache 16/20 hits,
+device closed and chips returned `FREE` afterward — confirmed via `gozer
+status` both before and after), no exceptions, default
+`horizon=5`/`n_candidates=200`/`n_elite=20`/`n_iterations=3`/
+`max_iterations=100`/`convergence_threshold=0.05`.
+
+```
+final: [0.42806785 0.04535207 0.27741844 0.04745707 0.3158203  0.13492512]
+goal:  [0.5        0.05       0.5        0.1        0.5        0.05      ]
+```
+
+Per-dimension absolute error: `[0.0719, 0.0046, 0.2226, 0.0525, 0.1842,
+0.0849]`; Euclidean norm of the error: **0.314** (above the loop's own
+`convergence_threshold` of 0.05 — did not converge).
+
+**Honest read: this is a genuinely worse result than Stage 0's own
+capstone run against the identical goal on the identical patch, not a
+better one, and is reported as such rather than reframed.** Stage 0's
+reflex-model run against this same 6-dim goal on `sequencer_test.vcv`
+finished at Euclidean error norm 0.222 (`final: [0.391, 0.026, 0.385,
+0.022, 0.376, 0.095]`, per-dim abs error `[0.109, 0.024, 0.115, 0.078,
+0.124, 0.045]` — see the Stage 0 section above). This run's norm (0.314)
+is meaningfully larger, i.e. the CEM-planned trajectory-model control loop
+landed *farther* from the goal than the plain single-shot inverse model did,
+despite the trajectory predictor's own held-out R² (above) being
+substantially stronger on every dimension than Stage 0's per-channel CV
+R² was. Per-dimension, the picture is mixed rather than uniformly worse:
+`loud_mean` (0.072 vs. 0.109) and `loud_std` (0.005 vs. 0.024) both
+improved over Stage 0, but `bright_mean` (0.223 vs. 0.115), `pitch_mean`
+(0.184 vs. 0.124), and `pitch_std` (0.085 vs. 0.045) all got worse, with
+`bright_mean` the single largest contributor to the larger overall norm.
+A plausible (not confirmed) explanation: `cem_plan` optimizes the
+*rollout's final predicted state* against the goal by scoring through the
+learned forward model for `horizon=5` compounded steps, so any per-step
+model bias compounds multiplicatively across the horizon in a way a
+single-shot inverse-model prediction never does — a strong one-step R²
+does not by itself guarantee a well-behaved 5-step-ahead rollout, and nothing
+in this task's scope re-verified the model's *multi-step* rollout accuracy
+independently of its single-step held-out numbers above. Per this task's
+own explicit instruction, this result was **not** tuned away — no dataset
+size, `horizon`, `n_candidates`, or `max_iterations` change was made to
+force a better-looking number. This is reported as a real, negative
+finding: for this instrument, at this dataset size, CEM planning over a
+learned trajectory model did not outperform Stage 0's much simpler direct
+reflex mapping on the same goal, and may have made things measurably worse
+on 3 of 6 dimensions specifically.
+
+### Full regression check
+
+`python3 -m pytest -q` → **115 passed, 7 deselected**. `gozer run --chips 1
+--who "claude:tt-cv-agency" --reason "final Stage 3 suite check" --
+python3 -m pytest -q -m hardware` → **7 passed, 115 deselected** (up from
+Stage 2's 4, per this stage's own 3 new `tt_trajectory_inference.py`
+hardware tests — matching the task brief's own expected count exactly).
+No regressions. `gozer status` confirmed all 4 chips `FREE` both before
+and after each hardware-touching run in this session.
+
+### Net assessment
+
+The full Stage 3 pipeline (trajectory collection, forward-dynamics
+training, CEM planning, batched `ttnn` inference, and the resulting
+control loop) runs end-to-end against the real, live instrument with zero
+exceptions, and the trajectory predictor itself is a genuinely
+better-fitting model of its own (easier) one-step-ahead target than Stage
+0's inverse model was of its target. But the stage's actual goal —
+better-controlled convergence via trajectory planning — is **not**
+demonstrated here: the live control loop's measured error (Euclidean norm
+0.314) is worse than Stage 0's much simpler reflex-model result (0.222) on
+the identical goal against the identical patch, worse on 3 of 6 feature
+dimensions specifically. Per this task's explicit brief, this is reported
+as the genuinely interesting result it is, not tuned into a better-looking
+number by adjusting dataset size or planner parameters. The most plausible
+open explanation — compounding per-step model bias across a 5-step CEM
+rollout not being caught by single-step held-out R² — is flagged as a
+concrete, testable hypothesis for a future pass (e.g. directly comparing
+1-step vs. 5-step-ahead rollout error against held-out real trajectories),
+not asserted as confirmed.
