@@ -1827,3 +1827,96 @@ revisit) needs to fix, in priority order:
    settle instead of random-walking.
 6. Align `aggregate_window_s` between the two control loops before
    drawing any future before/after comparison.
+
+## Stage 3 follow-up (2026-09-09): fixing punch-list items 3 and 4, and a
+new live result that beats both prior baselines
+
+Picked up two of the punch-list items above directly: item 3 (CEM's
+search budget vs. its real search dimension) and item 4 (`cem_plan`
+never clipping rolled states or knowing the real current CV, so it could
+plan a physically undeliverable cumulative move). Items 1, 2, 5, 6 remain
+open, unchanged from the list above.
+
+**Fix.** `cem_planner.py`'s `cem_plan` now takes a new required
+`current_cv` argument. At every horizon step, each candidate's sampled
+delta is clipped against a *running per-candidate CV tally*
+(`current_cv` plus every prior step's real, already-clipped delta) —
+exactly the same clip `trajectory_collection.py` and
+`trajectory_control_loop.py` already apply when actually moving the
+instrument — so the search scores and refits toward the delta that would
+truly be delivered, never one a later boundary clip would silently
+shrink. Rolled-forward states are also clipped to `[0, 1]` after every
+`predict_fn` call, so an over-scaled `predict_fn` (see the action-gain
+finding above) can no longer walk a candidate into a feature vector
+outside the real measurable range and have that impossible state quietly
+drive its score. `trajectory_control_loop.py`'s defaults changed
+alongside this: `horizon` 5 → 3 and `n_candidates`/`n_elite`/
+`n_iterations` 200/20/3 → 600/60/6, shrinking the search dimension
+(`horizon × action_dim`: 40 → 24) while growing the sample budget, which
+between them leave the per-control-step device-call count essentially
+unchanged (`horizon × n_iterations`: 15 → 18) — each call's batch just
+got bigger. `cem_planner.py` gained a new test exercising the algorithm
+at something close to this real scale (`horizon=3`, `action_dim=8`, a
+24-dim search) instead of only the prior 1-2-dimension toy tests, plus
+dedicated tests for the cumulative-CV-headroom clip and the rolled-state
+clip. Full suite: 120 passed / 7 deselected (non-hardware, up from 117);
+7 passed / 120 deselected (hardware, unchanged — neither touched file
+imports `ttnn`).
+
+**A mistake made and caught during this pass, not hidden.** Checking
+whether VCV Rack was already running before the live verification run,
+`pgrep -f "Rack2Free"` combined with a `/proc/<pid>/exe` resolve
+incorrectly reported no real Rack process (both matches resolved to
+`bash`, not `Rack` — apparently a shell-wrapping quirk of how this
+session's own sandboxed commands report, not a reliable absence check).
+Trusting that false negative, a second `Rack` instance was launched on
+top of the one already running since the prior session (pid `2505388`,
+up ~15 hours) — two processes briefly held the same MIDI loopback port
+and PipeWire sink simultaneously. Caught immediately by checking `ps -eo
+pid,comm,args` for the literal `Rack` command name (not `bash`) and
+comparing `ps -o lstart`/`etime` between the two PIDs: the new one
+(`2773690`) was 35 seconds old, the old one 15 hours — `kill -TERM` on
+the new one only, confirmed via `pw-link -l` afterward that exactly one
+`VCV Rack` client remained, correctly cabled through `vcv_loop`. No data
+lost, no autosave clobbered, the original instance untouched throughout.
+**Lesson for next time**: `pgrep -f`/`/proc/<pid>/exe` resolving to
+`bash` instead of the real binary is not proof of absence in this
+sandboxed environment — check `ps -eo pid,comm,args` for the literal
+process name before concluding nothing is running.
+
+**Live verification, same goal as every prior comparison in this
+history** (`gozer run --chips 1 --who "claude:tt-cv-agency" -- python3
+trajectory_control_loop.py 0.5 0.05 0.5 0.1 0.5 0.05`), against the
+already-trained predictor and dataset from the original capstone (no
+recollection, no retraining — only the planner code changed):
+
+```
+final: [0.4620788  0.02737283 0.34573712 0.0382032  0.40970664 0.04480287]
+goal:  [0.5        0.05       0.5        0.1        0.5        0.05      ]
+```
+
+Per-dimension absolute error: `[0.0379, 0.0226, 0.1543, 0.0618, 0.0903,
+0.0052]`. **Euclidean norm of the error: 0.1943.**
+
+| run | Euclidean norm |
+|---|---|
+| Stage 0 (reflex model) | 0.222 |
+| Stage 3 original capstone (CEM, pre-fix) | 0.314 |
+| Stage 3 this fix (CEM, post-fix) | **0.194** |
+
+**Honest read: this now beats both prior numbers**, not just the
+pre-fix Stage 3 result — a real improvement, not merely closing a gap.
+`bright_mean` (0.154) is still the largest single per-dimension error,
+consistent with the goal-coverage finding above (this dimension had the
+worst training-data coverage near the goal of the six) — an out-of-
+distribution goal is not something a smarter search alone fully
+compensates for, so this result should be read as "the planner and its
+search budget were genuinely undersized, and fixing them helped
+substantially" rather than "the training-data-coverage problem is now
+resolved." Items 1 (goal-spanning data collection) and 2 (persistence-
+baseline-by-default, already done in the prior fix round) remain the
+next things worth doing if further improvement is wanted. The
+`aggregate_window_s` mismatch (item 6) still applies to this comparison
+exactly as before — this result is not yet a clean apples-to-apples
+number against Stage 0's, even though it's now numerically better on
+both sides of that caveat.

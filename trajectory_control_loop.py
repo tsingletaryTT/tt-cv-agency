@@ -12,10 +12,19 @@ def run_trajectory_control_loop(
     backend: CVBackend,
     predict_fn: Callable[[np.ndarray, np.ndarray], np.ndarray],
     goal_features: np.ndarray,
-    horizon: int = 5,
-    n_candidates: int = 200,
-    n_elite: int = 20,
-    n_iterations: int = 3,
+    # horizon=3 (not the original 5) x n_candidates/n_elite/n_iterations
+    # raised well above the original 200/20/3: a final-review pass on the
+    # live capstone found horizon=5 x action_dim=8 (a 40-dim search) at the
+    # original budget left 5 of this patch's 8 CV channels dominated by
+    # seed-to-seed sampling noise rather than real signal. Shrinking the
+    # search dimension (horizon*action_dim: 40 -> 24) and growing the
+    # budget together closes most of that gap without materially changing
+    # per-control-step device-call count (horizon*n_iterations: 5*3=15
+    # calls before, 3*6=18 after -- each call's batch just got bigger).
+    horizon: int = 3,
+    n_candidates: int = 600,
+    n_elite: int = 60,
+    n_iterations: int = 6,
     action_std_init: float = 0.1,
     max_action: float = 0.15,
     control_interval_s: float = 0.1,
@@ -39,14 +48,14 @@ def run_trajectory_control_loop(
             time.sleep(control_interval_s)
             continue
 
+        current_cv = np.array([backend.last_known_cv(ch) for ch in channels])
         action = cem_plan(
-            current_state, goal_features, predict_fn,
+            current_state, current_cv, goal_features, predict_fn,
             action_dim=len(channels), horizon=horizon,
             n_candidates=n_candidates, n_elite=n_elite, n_iterations=n_iterations,
             action_std_init=action_std_init, max_action=max_action, rng=rng,
         )
 
-        current_cv = np.array([backend.last_known_cv(ch) for ch in channels])
         next_cv = np.clip(current_cv + action, 0.0, 1.0)
 
         for ch, value in zip(channels, next_cv):
