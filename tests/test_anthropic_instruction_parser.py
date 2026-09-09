@@ -66,3 +66,40 @@ def test_parse_recipe_raises_recipe_parse_error_on_refusal():
         mock_client.messages.parse.return_value = response
         with pytest.raises(RecipeParseError, match="refusal"):
             parser.parse_recipe("anything", CHANNELS)
+
+
+GOAL_VALUES = {
+    "loud_mean": 0.5, "loud_std": 0.1, "bright_mean": 0.3,
+    "bright_std": 0.05, "pitch_mean": 0.7, "pitch_std": 0.2,
+}
+
+
+def test_parse_goal_returns_dict_from_parsed_output():
+    parser = AnthropicInstructionParser()
+    with patch("instruction_parser.anthropic_parser.anthropic.Anthropic") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.messages.parse.return_value = _mock_parsed_response(**GOAL_VALUES)
+        result = parser.parse_goal("make it bright and sweeping")
+    assert result == GOAL_VALUES
+
+
+def test_parse_goal_uses_configured_model():
+    parser = AnthropicInstructionParser(model="claude-sonnet-5")
+    with patch("instruction_parser.anthropic_parser.anthropic.Anthropic") as MockClient:
+        mock_client = MockClient.return_value
+        mock_client.messages.parse.return_value = _mock_parsed_response(**GOAL_VALUES)
+        parser.parse_goal("anything")
+    _, kwargs = mock_client.messages.parse.call_args
+    assert kwargs["model"] == "claude-sonnet-5"
+
+
+def test_parse_goal_raises_recipe_parse_error_on_refusal():
+    parser = AnthropicInstructionParser()
+    with patch("instruction_parser.anthropic_parser.anthropic.Anthropic") as MockClient:
+        mock_client = MockClient.return_value
+        response = MagicMock()
+        response.parsed_output = None
+        response.stop_reason = "refusal"
+        mock_client.messages.parse.return_value = response
+        with pytest.raises(RecipeParseError, match="refusal"):
+            parser.parse_goal("anything")

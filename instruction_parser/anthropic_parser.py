@@ -1,8 +1,8 @@
 import anthropic
 
 from instruction_parser.base import InstructionParser, RecipeParseError
-from instruction_parser.prompts import build_system_prompt
-from instruction_parser.schema import build_recipe_model
+from instruction_parser.prompts import build_goal_system_prompt, build_system_prompt
+from instruction_parser.schema import GoalFeatures, build_recipe_model
 
 
 class AnthropicInstructionParser(InstructionParser):
@@ -38,3 +38,27 @@ class AnthropicInstructionParser(InstructionParser):
         # validates range/required-keys before parsed_output is ever
         # populated, so re-validating would be redundant.
         return {name: parsed[name] for name in channels}
+
+    def parse_goal(self, instruction: str) -> dict[str, float]:
+        client = anthropic.Anthropic()
+        try:
+            response = client.messages.parse(
+                model=self._model,
+                max_tokens=1024,
+                system=build_goal_system_prompt(),
+                messages=[{"role": "user", "content": instruction}],
+                output_format=GoalFeatures,
+            )
+        except Exception as e:
+            raise RecipeParseError(f"Anthropic API call failed: {e}") from e
+
+        if response.parsed_output is None:
+            raise RecipeParseError(
+                f"Anthropic response had no parsed output (stop_reason={response.stop_reason!r})"
+            )
+
+        # Deliberately no validate_goal_json call here, same reasoning as
+        # parse_recipe: client.messages.parse's own output_format
+        # enforcement already validates range/required-keys before
+        # parsed_output is ever populated.
+        return response.parsed_output.model_dump()
