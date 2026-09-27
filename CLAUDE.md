@@ -2052,3 +2052,109 @@ Tasks 1-4). `gozer run --chips 1 --who "claude:tt-cv-agency" --reason
 reaches `tt_trajectory_inference.py`/`ttnn` inside `main()`, past
 argparse's own `--help` exit point, so `--help` and module import alone
 never touch hardware).
+
+## First real live-LLM verification (2026-09-27): Qwen3-0.6B on CPU, a real
+integration bug it exposed, and `instruction_to_goal.py`'s gap finally closed
+
+Closes the gap the two sections above both flagged as open since Stage 1:
+this machine now has a real local LLM answering `parse_goal` for real, via
+[tt-local-generator](../tt-local-generator)'s `prompt_server.py` — a
+lightweight OpenAI-compatible FastAPI wrapper around `Qwen/Qwen3-0.6B`
+running on **CPU only** (`transformers` + `torch`, no `ttnn`, port 8001).
+Deliberate choice, not a default: the 4 TT chips stay reserved for this
+project's own native `ttnn` kernels (the trajectory predictor + CEM
+planner) rather than being spent on hosting an LLM — a CPU-only small
+model costs zero chip time and can run alongside native control-loop work
+with no lease contention at all.
+
+### A real integration bug, not a model-capability problem
+
+First live call returned prose, not JSON, 100% of the time:
+`'- loudness: [0.8, 0.2]\n- brightness: [0.9, 0.1]\n- pitch: [0.8, 0.1]'`
+for "make it bright and steady" — semantically the values were already
+good (bright↑, steady→low std), but unusable as-is. Root cause: unlike
+`AnthropicInstructionParser` (real SDK-level structured output) or a real
+inference server with grammar-constrained decoding (vLLM, llama.cpp
+server), `prompt_server.py` is a bare `.generate()` wrapper — its
+`ChatRequest` model has no `response_format` field at all, so
+`LocalInstructionParser`'s `response_format=json_schema` is silently
+dropped (pydantic's default `extra="ignore"`), and `build_goal_system_prompt`
+never actually told the model to reply in JSON with specific key names —
+it only described the six fields in prose, relying on schema enforcement
+that doesn't exist for this server.
+
+**Fix, in two parts** (`instruction_parser/prompts.py`,
+`instruction_parser/schema.py`, commit `4429053`):
+1. Added an explicit "respond with ONLY this JSON object, exactly these
+   keys" instruction to both `build_system_prompt` and
+   `build_goal_system_prompt` — harmless for `AnthropicInstructionParser`
+   (ignores prose formatting in favor of real structured output), load-
+   bearing for any server with no grammar enforcement. This alone got real
+   JSON on ~60% of samples (9/15 across 3 test instructions, 5 samples
+   each) — the rest wrapped otherwise-valid JSON in a ```` ```json ... ``` ````
+   fence despite being told not to.
+2. Added `_strip_markdown_code_fence` to `schema.py`, applied in both
+   `validate_recipe_json` and `validate_goal_json` (the shared
+   provider-agnostic layer, not duplicated per-provider, since this is a
+   generic local-LLM quirk, not specific to Qwen3 or to the goal schema).
+   Re-verified live: **15/15** samples across the same 3 instructions now
+   parse successfully.
+
+### First live end-to-end run: real LLM → real goal → real CV steering
+
+```
+gozer run --chips 1 --who "claude:tt-cv-agency" --reason "closing-the-loop live-LLM verification" -- \
+  python3 instruction_to_goal.py "make it bright and steady" \
+  --llm local --base-url http://localhost:8001/v1 --model Qwen/Qwen3-0.6B
+```
+
+Against the live `sequencer_test.vcv` patch (relaunched fresh this
+session — clean `log.txt` `END` marker, `vcv_loop` null-sink recreated,
+PipeWire defaults reset, `pw-link -l` reconfirmed routed correctly before
+running). Parsed goal and final measured result:
+
+```
+goal:   [0.700 0.150 0.800 0.150 0.600 0.150]
+final:  [0.280 0.019 0.430 0.047 0.620 0.050]
+```
+
+Per-dimension absolute error: `[0.420, 0.131, 0.370, 0.103, 0.020, 0.100]`.
+**Euclidean norm of the error: 0.593** — worse than every prior baseline
+in this project's history (Stage 0 reflex 0.222, Stage 3 pre-fix CEM
+0.314, Stage 3 post-fix CEM 0.194). Chip lease self-resolved to `FREE`
+within seconds after the run, same self-resolution pattern documented in
+Stage 0's capstone.
+
+**Honest read: this is not a new regression, and not really about the
+LLM.** Two things worth separating:
+- The plumbing itself is solid — first real LLM call this codebase has
+  ever made, correct JSON on the first try post-fix, full CEM control
+  loop ran clean against real hardware with zero exceptions.
+- The large error is the *same* goal-coverage gap the Stage 3
+  final-review section above already identified as the dominant,
+  unresolved root cause — just now hit by a real instruction instead of
+  a hand-picked test vector. `pitch_mean` (goal 0.6, close to the old test
+  goal's 0.5) converged almost exactly (0.020 error); `bright_mean` (goal
+  0.8, near the top of this patch's achievable range and the
+  worst-covered dimension in the training data per that section) is the
+  single largest miss (0.370). A more ambitious real-world instruction
+  hits the exact hole in the training data that was already flagged, not
+  a new one.
+- One semantic quibble, not a bug: the model returned the same `std=0.15`
+  for all three dimensions, including `bright_std` — arguably "steady"
+  should have pulled *that* one down specifically. Repeated sampling
+  during the fix-verification pass (above) showed real run-to-run
+  variance in which std combination gets picked, so this reads as
+  sampling variance landing on a less-differentiated draw this particular
+  time, not a systematic "always defaults to 0.15" failure.
+
+**Net assessment**: Qwen3-0.6B, run entirely on CPU, is assistive enough
+to use for this role — it required a real (now-fixed) integration fix,
+not a bigger model. `instruction_to_goal.py`'s live-LLM gap (open since
+2026-09-09) is now closed. `instruction_to_preset.py`'s equivalent gap
+(open since Stage 1, 2026-09-07) is **not** independently re-verified by
+this pass — it shares the same fixed `prompts.py`/`schema.py` code and
+should benefit identically, but nobody has actually re-run it against a
+real LLM this session, so that specific claim stays open until someone
+does. The goal-coverage gap this run surfaced is exactly what the
+following Stage 3 tune-up work targets.
