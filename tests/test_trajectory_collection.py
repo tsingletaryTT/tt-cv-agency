@@ -1,6 +1,6 @@
 import numpy as np
 from backends.base import FakeCVBackend
-from trajectory_collection import collect_trajectories
+from trajectory_collection import collect_trajectories, build_mixed_seed_cv_vectors
 
 
 def test_collect_trajectories_shapes():
@@ -89,3 +89,42 @@ def test_collect_trajectories_uses_uniform_random_starts_without_seed_vectors():
     calls = backend.set_cv_calls
     assert all(0.0 <= value <= 1.0 for _, value in calls)
     assert states.shape == (2, 6)
+
+
+def test_build_mixed_seed_cv_vectors_keeps_first_half_archive_unchanged():
+    archive_cv = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]])
+    result = build_mixed_seed_cv_vectors(archive_cv, seed=1)
+    assert len(result) == len(archive_cv)
+    # First half (n_total // 2 = 2 slots dropped from the END, so the
+    # FIRST n_archive = n_total - n_uniform = 2 entries are kept verbatim).
+    assert np.array_equal(result[:2], archive_cv[:2])
+
+
+def test_build_mixed_seed_cv_vectors_second_half_is_uniform_random_in_range():
+    archive_cv = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]])
+    result = build_mixed_seed_cv_vectors(archive_cv, seed=1)
+    uniform_half = result[2:]
+    assert uniform_half.shape == (2, 2)
+    assert np.all(uniform_half >= 0.0) and np.all(uniform_half <= 1.0)
+    # Not just coincidentally equal to the archive values it replaced.
+    assert not np.array_equal(uniform_half, archive_cv[2:])
+
+
+def test_build_mixed_seed_cv_vectors_is_reproducible_given_same_seed():
+    archive_cv = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]])
+    result_a = build_mixed_seed_cv_vectors(archive_cv, seed=7)
+    result_b = build_mixed_seed_cv_vectors(archive_cv, seed=7)
+    assert np.array_equal(result_a, result_b)
+
+
+def test_build_mixed_seed_cv_vectors_preserves_length_for_odd_input():
+    archive_cv = np.array([[0.1], [0.2], [0.3], [0.4], [0.5]])  # 5 members, odd
+    result = build_mixed_seed_cv_vectors(archive_cv, seed=1)
+    assert len(result) == 5
+
+
+def test_build_mixed_seed_cv_vectors_handles_tiny_archive_without_crashing():
+    archive_cv = np.array([[0.5, 0.5]])  # single member
+    result = build_mixed_seed_cv_vectors(archive_cv, seed=1)
+    assert len(result) == 1
+    assert result.shape == (1, 2)
