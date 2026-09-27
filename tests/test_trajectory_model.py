@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 from trajectory_model import (
-    TrajectoryPredictor, evaluate_persistence_baseline_per_dimension,
+    TrajectoryPredictor, estimate_action_gain_ratio_per_dimension,
+    evaluate_persistence_baseline_per_dimension,
     evaluate_predictor_per_dimension, save_predictor_weights,
     train_predictor, train_val_split_trajectories,
 )
@@ -162,3 +163,74 @@ def test_save_predictor_weights_records_action_channels_when_given(tmp_path):
     loaded = np.load(out_path)
     assert "action_channels" in loaded.files
     assert loaded["action_channels"].tolist() == ["vco_freq", "vco_fm", "vca_level"]
+
+
+def test_train_predictor_accepts_weight_decay_without_changing_default_behavior():
+    # weight_decay=0.0 (the default) must be byte-for-byte identical to
+    # today's un-regularized training -- same seed, same data, same epochs,
+    # same everything else, just the new parameter passed explicitly.
+    rng = np.random.default_rng(0)
+    states = rng.uniform(0, 1, size=(50, 6))
+    actions = rng.uniform(-0.1, 0.1, size=(50, 8))
+    next_states = rng.uniform(0, 1, size=(50, 6))
+
+    torch.manual_seed(0)
+    model_a = train_predictor(states, actions, next_states, epochs=20)
+    torch.manual_seed(0)
+    model_b = train_predictor(states, actions, next_states, epochs=20, weight_decay=0.0)
+
+    with torch.no_grad():
+        out_a = model_a(torch.tensor(states, dtype=torch.float32), torch.tensor(actions, dtype=torch.float32))
+        out_b = model_b(torch.tensor(states, dtype=torch.float32), torch.tensor(actions, dtype=torch.float32))
+    assert torch.allclose(out_a, out_b)
+
+
+def test_train_predictor_with_nonzero_weight_decay_produces_different_weights():
+    rng = np.random.default_rng(0)
+    states = rng.uniform(0, 1, size=(50, 6))
+    actions = rng.uniform(-0.1, 0.1, size=(50, 8))
+    next_states = rng.uniform(0, 1, size=(50, 6))
+
+    torch.manual_seed(0)
+    model_plain = train_predictor(states, actions, next_states, epochs=50)
+    torch.manual_seed(0)
+    model_regularized = train_predictor(states, actions, next_states, epochs=50, weight_decay=1e-2)
+
+    assert not torch.allclose(model_plain.fc1.weight, model_regularized.fc1.weight)
+
+
+def test_estimate_action_gain_ratio_matches_known_constructed_ratio():
+    # A hand-built model whose predicted delta is EXACTLY 2x the real
+    # observed delta on this fixture, for every state dimension --
+    # confirms the ratio calculation itself, independent of any real
+    # trained model's behavior.
+    class DoubleGainModel(TrajectoryPredictor):
+        def forward(self, state, action):
+            real_delta = torch.tensor([0.1, 0.2], dtype=torch.float32)
+            return state + 2.0 * real_delta.unsqueeze(0).repeat(state.shape[0], 1)
+
+    model = DoubleGainModel(state_dim=2, action_dim=1)
+    states_val = np.array([[0.3, 0.3], [0.5, 0.5]])
+    actions_val = np.zeros((2, 1))
+    next_states_val = states_val + np.array([0.1, 0.2])  # real delta
+
+    ratio = estimate_action_gain_ratio_per_dimension(model, states_val, actions_val, next_states_val)
+    assert np.allclose(ratio, [2.0, 2.0], atol=1e-4)
+
+
+def test_estimate_action_gain_ratio_handles_zero_real_movement_without_crashing():
+    # A state dimension that never changes in the validation data (real
+    # delta median exactly 0.0) must not raise ZeroDivisionError/produce
+    # inf or NaN -- the floor on the denominator must actually engage.
+    class ConstantOffsetModel(TrajectoryPredictor):
+        def forward(self, state, action):
+            return state + torch.tensor([0.05, 0.0], dtype=torch.float32).unsqueeze(0).repeat(state.shape[0], 1)
+
+    model = ConstantOffsetModel(state_dim=2, action_dim=1)
+    states_val = np.array([[0.3, 0.5], [0.4, 0.5]])
+    actions_val = np.zeros((2, 1))
+    next_states_val = states_val.copy()  # dimension 1 never changes at all
+
+    ratio = estimate_action_gain_ratio_per_dimension(model, states_val, actions_val, next_states_val)
+    assert np.all(np.isfinite(ratio))
+    assert ratio[0] > 0

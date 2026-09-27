@@ -30,7 +30,7 @@ class TrajectoryPredictor(nn.Module):
 
 def train_predictor(
     states: np.ndarray, actions: np.ndarray, next_states: np.ndarray,
-    epochs: int = 200, lr: float = 1e-3, hidden: int = 32,
+    epochs: int = 200, lr: float = 1e-3, hidden: int = 32, weight_decay: float = 0.0,
 ) -> TrajectoryPredictor:
     """Train a TrajectoryPredictor on a batch of (state, action, next_state) tuples.
 
@@ -40,9 +40,17 @@ def train_predictor(
     `hidden` is exposed (default unchanged at 32, matching every existing
     caller's behavior) so a future dataset-size/capacity tradeoff can be
     explored without editing this function again.
+
+    `weight_decay` (default 0.0, matching every existing caller's behavior
+    exactly) adds L2 regularization via Adam's own weight_decay parameter --
+    a real, previously-absent knob against the Stage 3 final-review finding
+    that this model's action term can absorb measurement noise into an
+    over-scaled gain when trained on a small, unregularized dataset. See
+    estimate_action_gain_ratio_per_dimension below for how to check whether
+    a given weight_decay value actually helped.
     """
     model = TrajectoryPredictor(state_dim=states.shape[1], action_dim=actions.shape[1], hidden=hidden)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     loss_fn = nn.MSELoss()
 
     s = torch.tensor(states, dtype=torch.float32)
@@ -140,6 +148,40 @@ def evaluate_persistence_baseline_per_dimension(
     return mse_per_dim, r2_per_dim
 
 
+def estimate_action_gain_ratio_per_dimension(
+    model: TrajectoryPredictor,
+    states_val: np.ndarray, actions_val: np.ndarray, next_states_val: np.ndarray,
+) -> np.ndarray:
+    """Per-state-dimension ratio of the model's predicted step-to-step
+    movement magnitude to the REAL observed movement magnitude, on held-out
+    validation data. A ratio near 1.0 means the model's action response is
+    calibrated to reality; a ratio of e.g. 5.6 (as found live for
+    bright_mean in the original Stage 3 final review) means the model
+    believes it has ~5.6x more authority per action than the instrument
+    actually has -- a real risk with a small, unregularized MLP absorbing
+    measurement noise into the action term rather than learning its true,
+    smaller magnitude.
+
+    Uses REAL (state, action, next_state) validation triples throughout
+    (not a synthetic sweep from a fixed neutral state), so the ratio
+    reflects the model's behavior in the same operating regime the CEM
+    planner actually queries it in. Median (not mean) aggregation resists
+    outliers from any single noisy transition; a small floor on the
+    denominator avoids dividing by a near-zero real movement (a state
+    dimension that happens to never change in the validation set would
+    otherwise produce inf/NaN instead of a large-but-finite ratio).
+    """
+    model.eval()
+    with torch.no_grad():
+        prediction = model(
+            torch.tensor(states_val, dtype=torch.float32),
+            torch.tensor(actions_val, dtype=torch.float32),
+        ).numpy()
+    predicted_delta = np.abs(prediction - states_val)
+    real_delta = np.abs(next_states_val - states_val)
+    return np.median(predicted_delta, axis=0) / np.maximum(np.median(real_delta, axis=0), 1e-4)
+
+
 def save_predictor_weights(model: TrajectoryPredictor, path: str, action_channels: list[str] | None = None) -> None:
     """Save the model's weights and optional action channel metadata to an npz file.
 
@@ -176,19 +218,25 @@ if __name__ == "__main__":
     (s_train, a_train, ns_train), (s_val, a_val, ns_val) = train_val_split_trajectories(
         data["states"], data["actions"], data["next_states"], val_fraction=0.2, seed=0
     )
-    model = train_predictor(s_train, a_train, ns_train, epochs=500)
+    # weight_decay=1e-3 (Stage 3 tune-up, 2026-09-27): a first attempt at L2
+    # regularization against the action-gain over-scaling the original
+    # Stage 3 final review found (see estimate_action_gain_ratio_per_dimension
+    # below and the design spec's Decision 3) -- not tuned to a target
+    # outcome, reported honestly either way.
+    model = train_predictor(s_train, a_train, ns_train, epochs=500, weight_decay=1e-3)
 
     train_mean = ns_train.mean(axis=0)
     mse_per_dim, r2_per_dim = evaluate_predictor_per_dimension(model, s_val, a_val, ns_val, baseline_mean=train_mean)
     persistence_mse, persistence_r2 = evaluate_persistence_baseline_per_dimension(
         s_val, ns_val, baseline_mean=train_mean
     )
+    gain_ratio = estimate_action_gain_ratio_per_dimension(model, s_val, a_val, ns_val)
 
     state_dim_names = ["loud_mean", "loud_std", "bright_mean", "bright_std", "pitch_mean", "pitch_std"]
     print(f"train/val split: {len(s_train)} train / {len(s_val)} held-out validation transitions")
-    print(f"{'state dim':<12} {'val MSE':>10} {'val R^2':>10} {'persist R^2':>12}")
-    for name, mse, r2, p_r2 in zip(state_dim_names, mse_per_dim, r2_per_dim, persistence_r2):
-        print(f"{name:<12} {mse:>10.4f} {r2:>10.4f} {p_r2:>12.4f}")
+    print(f"{'state dim':<12} {'val MSE':>10} {'val R^2':>10} {'persist R^2':>12} {'gain ratio':>12}")
+    for name, mse, r2, p_r2, gr in zip(state_dim_names, mse_per_dim, r2_per_dim, persistence_r2, gain_ratio):
+        print(f"{name:<12} {mse:>10.4f} {r2:>10.4f} {p_r2:>12.4f} {gr:>12.4f}")
 
     save_predictor_weights(model, "data/sequencer_trajectory_model_weights.npz", action_channels=channels)
     print("saved trained predictor weights to data/sequencer_trajectory_model_weights.npz")
