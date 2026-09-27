@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import numpy as np
 from backends.base import FakeCVBackend
 from trajectory_control_loop import run_trajectory_control_loop
@@ -79,3 +81,52 @@ def test_trajectory_control_loop_does_not_truncate_history_when_converged_early(
         aggregate_window_s=0.1, seed=0,
     )
     assert len(history) == 5
+
+
+def test_trajectory_control_loop_applies_step_fraction_to_planned_action():
+    backend = FakeCVBackend(channel_names=["a", "b"])
+    goal = np.array([0.5, 0.0, 0.5, 0.0, 0.5, 0.0])
+
+    def dummy_predict_fn(states, actions):
+        return states  # never actually invoked once cem_plan itself is mocked
+
+    with patch("trajectory_control_loop.cem_plan", return_value=np.array([0.2, -0.1])):
+        run_trajectory_control_loop(
+            backend, predict_fn=dummy_predict_fn, goal_features=goal,
+            horizon=1, n_candidates=5, n_elite=1, n_iterations=1,
+            sample_rate=48000, control_interval_s=0.0, max_iterations=1,
+            convergence_threshold=-1.0, aggregate_window_s=0.1, seed=0,
+            step_fraction=0.5,
+        )
+
+    calls = dict(backend.set_cv_calls)
+    # FakeCVBackend starts every channel at 0.5 (see backends/base.py);
+    # cem_plan is mocked to always return [0.2, -0.1] regardless of state,
+    # so step_fraction=0.5 must halve it before it's added:
+    # 0.5 + 0.5*0.2 = 0.6, 0.5 + 0.5*(-0.1) = 0.45.
+    assert np.isclose(calls["a"], 0.6)
+    assert np.isclose(calls["b"], 0.45)
+
+
+def test_trajectory_control_loop_step_fraction_1_0_reproduces_undamped_behavior():
+    # A migrating caller that explicitly passes step_fraction=1.0 must get
+    # exactly today's pre-tune-up behavior: the full planned action applied
+    # unscaled.
+    backend = FakeCVBackend(channel_names=["a", "b"])
+    goal = np.array([0.5, 0.0, 0.5, 0.0, 0.5, 0.0])
+
+    def dummy_predict_fn(states, actions):
+        return states
+
+    with patch("trajectory_control_loop.cem_plan", return_value=np.array([0.2, -0.1])):
+        run_trajectory_control_loop(
+            backend, predict_fn=dummy_predict_fn, goal_features=goal,
+            horizon=1, n_candidates=5, n_elite=1, n_iterations=1,
+            sample_rate=48000, control_interval_s=0.0, max_iterations=1,
+            convergence_threshold=-1.0, aggregate_window_s=0.1, seed=0,
+            step_fraction=1.0,
+        )
+
+    calls = dict(backend.set_cv_calls)
+    assert np.isclose(calls["a"], 0.7)   # 0.5 + 1.0*0.2
+    assert np.isclose(calls["b"], 0.4)   # 0.5 + 1.0*(-0.1)

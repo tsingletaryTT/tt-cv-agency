@@ -30,7 +30,19 @@ def run_trajectory_control_loop(
     control_interval_s: float = 0.1,
     max_iterations: int = 100,
     convergence_threshold: float = 0.05,
-    aggregate_window_s: float = 3.0,
+    # step_fraction (Stage 3 tune-up, 2026-09-27): apply only this fraction
+    # of cem_plan's returned first-step action, matching control_loop.py's
+    # own existing step_fraction convention. cem_plan replans from a fresh
+    # current_cv every iteration (receding-horizon usage), so damping the
+    # applied action lets per-iteration planner noise (the original Stage 3
+    # final review found 5 of 8 channels dominated by seed-to-seed sampling
+    # noise at the pre-tune-up search budget) average down across
+    # iterations instead of being applied at full magnitude every single
+    # step -- the mechanism a receding-horizon controller needs to actually
+    # settle rather than random-walk around the goal. step_fraction=1.0
+    # reproduces the exact pre-tune-up undamped behavior.
+    step_fraction: float = 0.5,
+    aggregate_window_s: float = 5.0,
     sample_rate: int | None = None,
     seed: int = 0,
 ) -> list[np.ndarray]:
@@ -56,7 +68,7 @@ def run_trajectory_control_loop(
             action_std_init=action_std_init, max_action=max_action, rng=rng,
         )
 
-        next_cv = np.clip(current_cv + action, 0.0, 1.0)
+        next_cv = np.clip(current_cv + step_fraction * action, 0.0, 1.0)
 
         for ch, value in zip(channels, next_cv):
             backend.set_cv(ch, float(value))
