@@ -152,34 +152,46 @@ def estimate_action_gain_ratio_per_dimension(
     model: TrajectoryPredictor,
     states_val: np.ndarray, actions_val: np.ndarray, next_states_val: np.ndarray,
 ) -> np.ndarray:
-    """Per-state-dimension ratio of the model's predicted step-to-step
-    movement magnitude to the REAL observed movement magnitude, on held-out
-    validation data. A ratio near 1.0 means the model's action response is
-    calibrated to reality; a ratio of e.g. 5.6 (as found live for
-    bright_mean in the original Stage 3 final review) means the model
-    believes it has ~5.6x more authority per action than the instrument
-    actually has -- a real risk with a small, unregularized MLP absorbing
+    """Per-state-dimension ratio of the model's ACTION-ONLY predicted movement
+    magnitude to the REAL observed movement magnitude, on held-out validation
+    data. A ratio near 1.0 means the model's action response is calibrated to
+    reality; a ratio well above 1.0 means the model believes the action has
+    more authority per step than the instrument actually has (the failure
+    mode the original Stage 3 final review found: the model's action term
+    over-scaled 3-6x, likely from a small unregularized MLP absorbing
     measurement noise into the action term rather than learning its true,
-    smaller magnitude.
+    smaller magnitude).
 
-    Uses REAL (state, action, next_state) validation triples throughout
-    (not a synthetic sweep from a fixed neutral state), so the ratio
-    reflects the model's behavior in the same operating regime the CEM
-    planner actually queries it in. Median (not mean) aggregation resists
-    outliers from any single noisy transition; a small floor on the
-    denominator avoids dividing by a near-zero real movement (a state
-    dimension that happens to never change in the validation set would
-    otherwise produce inf/NaN instead of a large-but-finite ratio).
+    Isolates the action's contribution by comparing the model's prediction
+    WITH the real applied action against its prediction at the SAME state
+    with a ZERO action (model(s,a) - model(s,0)) -- not the model's total
+    predicted movement (model(s,a) - s), which would also include any
+    state-dependent bias/drift the model learned that has nothing to do
+    with the action itself. An earlier version of this function compared
+    total predicted movement to total real movement, which a final-review
+    pass found could NOT detect the exact over-scaling failure mode it was
+    built to catch (it reported ~1.1-1.3x on the already-known-broken
+    original model, not the documented ~5.6x) -- this version corrects that.
+
+    Real observed movement (next_states_val - states_val) is still used as
+    the denominator as-is (it necessarily includes the real action's effect
+    plus any real drift/noise -- there is no way to isolate a real
+    "zero-action" counterfactual from already-collected trajectory data).
+    Median (not mean) aggregation resists outliers from any single noisy
+    transition; a small floor on the denominator avoids dividing by a
+    near-zero real movement (a state dimension that happens to never
+    change in the validation set would otherwise produce inf/NaN instead
+    of a large-but-finite ratio).
     """
     model.eval()
     with torch.no_grad():
-        prediction = model(
-            torch.tensor(states_val, dtype=torch.float32),
-            torch.tensor(actions_val, dtype=torch.float32),
-        ).numpy()
-    predicted_delta = np.abs(prediction - states_val)
+        states_t = torch.tensor(states_val, dtype=torch.float32)
+        actions_t = torch.tensor(actions_val, dtype=torch.float32)
+        pred_with_action = model(states_t, actions_t).numpy()
+        pred_no_action = model(states_t, torch.zeros_like(actions_t)).numpy()
+    predicted_action_delta = np.abs(pred_with_action - pred_no_action)
     real_delta = np.abs(next_states_val - states_val)
-    return np.median(predicted_delta, axis=0) / np.maximum(np.median(real_delta, axis=0), 1e-4)
+    return np.median(predicted_action_delta, axis=0) / np.maximum(np.median(real_delta, axis=0), 1e-4)
 
 
 def save_predictor_weights(model: TrajectoryPredictor, path: str, action_channels: list[str] | None = None) -> None:

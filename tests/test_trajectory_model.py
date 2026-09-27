@@ -199,20 +199,29 @@ def test_train_predictor_with_nonzero_weight_decay_produces_different_weights():
     assert not torch.allclose(model_plain.fc1.weight, model_regularized.fc1.weight)
 
 
-def test_estimate_action_gain_ratio_matches_known_constructed_ratio():
-    # A hand-built model whose predicted delta is EXACTLY 2x the real
-    # observed delta on this fixture, for every state dimension --
-    # confirms the ratio calculation itself, independent of any real
-    # trained model's behavior.
-    class DoubleGainModel(TrajectoryPredictor):
-        def forward(self, state, action):
-            real_delta = torch.tensor([0.1, 0.2], dtype=torch.float32)
-            return state + 2.0 * real_delta.unsqueeze(0).repeat(state.shape[0], 1)
+class KnownActionGainModel(TrajectoryPredictor):
+    """Predicts next_state = state + gain*action exactly (action_dim ==
+    state_dim), so the model's action-only marginal response
+    (model(s,a) - model(s,0)) is exactly gain*action for every transition --
+    a fully known ground truth for testing
+    estimate_action_gain_ratio_per_dimension's isolation logic."""
+    def __init__(self, gain: float, state_dim: int, action_dim: int):
+        super().__init__(state_dim=state_dim, action_dim=action_dim)
+        self._gain = gain
 
-    model = DoubleGainModel(state_dim=2, action_dim=1)
-    states_val = np.array([[0.3, 0.3], [0.5, 0.5]])
-    actions_val = np.zeros((2, 1))
-    next_states_val = states_val + np.array([0.1, 0.2])  # real delta
+    def forward(self, state, action):
+        return state + self._gain * action
+
+
+def test_estimate_action_gain_ratio_isolates_action_only_contribution():
+    # Real data: action == 0.1 always, real observed delta == 0.1 always
+    # (a perfectly-calibrated real relationship, real gain == 1.0). A model
+    # with gain=2.0 is therefore exactly 2x over-scaled -- the ratio must
+    # report 2.0, not something polluted by any state-dependent bias.
+    model = KnownActionGainModel(gain=2.0, state_dim=2, action_dim=2)
+    states_val = np.array([[0.3, 0.5], [0.4, 0.6]])
+    actions_val = np.array([[0.1, 0.1], [0.1, 0.1]])
+    next_states_val = states_val + 0.1  # real gain == 1.0
 
     ratio = estimate_action_gain_ratio_per_dimension(model, states_val, actions_val, next_states_val)
     assert np.allclose(ratio, [2.0, 2.0], atol=1e-4)
@@ -221,16 +230,39 @@ def test_estimate_action_gain_ratio_matches_known_constructed_ratio():
 def test_estimate_action_gain_ratio_handles_zero_real_movement_without_crashing():
     # A state dimension that never changes in the validation data (real
     # delta median exactly 0.0) must not raise ZeroDivisionError/produce
-    # inf or NaN -- the floor on the denominator must actually engage.
-    class ConstantOffsetModel(TrajectoryPredictor):
-        def forward(self, state, action):
-            return state + torch.tensor([0.05, 0.0], dtype=torch.float32).unsqueeze(0).repeat(state.shape[0], 1)
-
-    model = ConstantOffsetModel(state_dim=2, action_dim=1)
+    # inf or NaN -- the floor on the denominator must actually engage,
+    # even though the model DOES have a nonzero, correctly-isolated
+    # action-only response.
+    model = KnownActionGainModel(gain=1.0, state_dim=2, action_dim=2)
     states_val = np.array([[0.3, 0.5], [0.4, 0.5]])
-    actions_val = np.zeros((2, 1))
-    next_states_val = states_val.copy()  # dimension 1 never changes at all
+    actions_val = np.array([[0.05, 0.0], [0.05, 0.0]])
+    next_states_val = states_val.copy()  # real movement is exactly zero
 
     ratio = estimate_action_gain_ratio_per_dimension(model, states_val, actions_val, next_states_val)
     assert np.all(np.isfinite(ratio))
     assert ratio[0] > 0
+
+
+def test_estimate_action_gain_ratio_flags_overscaled_model_outside_sane_band():
+    # A model 5x over-scaled relative to real movement -- the same SHAPE
+    # of failure as the original Stage 3 final-review finding (bright_mean
+    # ~5.6x). Confirms the ratio actually falls OUTSIDE a sane calibration
+    # band (0.3-3.0), i.e. this diagnostic would catch a real
+    # reintroduction of that failure mode, not just compute an unused number.
+    model = KnownActionGainModel(gain=5.0, state_dim=2, action_dim=2)
+    states_val = np.array([[0.3, 0.5], [0.4, 0.6]])
+    actions_val = np.array([[0.1, 0.1], [0.1, 0.1]])
+    next_states_val = states_val + 0.1  # real gain == 1.0
+
+    ratio = estimate_action_gain_ratio_per_dimension(model, states_val, actions_val, next_states_val)
+    assert np.all((ratio < 0.3) | (ratio > 3.0))
+
+
+def test_estimate_action_gain_ratio_passes_sane_band_for_calibrated_model():
+    model = KnownActionGainModel(gain=1.0, state_dim=2, action_dim=2)
+    states_val = np.array([[0.3, 0.5], [0.4, 0.6]])
+    actions_val = np.array([[0.1, 0.1], [0.1, 0.1]])
+    next_states_val = states_val + 0.1
+
+    ratio = estimate_action_gain_ratio_per_dimension(model, states_val, actions_val, next_states_val)
+    assert np.all((ratio >= 0.3) & (ratio <= 3.0))
