@@ -12,10 +12,23 @@ def build_system_prompt(channels: dict[str, str]) -> str:
     must fill in. Used by both AnthropicInstructionParser and
     LocalInstructionParser -- this function is plain string-building with
     no provider-specific code, so it lives in its own module rather than
-    being imported from one provider's module into the other's."""
+    being imported from one provider's module into the other's.
+
+    The trailing JSON-format paragraph is a fallback for servers that
+    don't enforce response_format/json_schema server-side (confirmed
+    necessary against tt-local-generator's prompt_server.py, a bare
+    generate() wrapper with no grammar constraint) -- AnthropicInstructionParser
+    gets real structured output from the SDK regardless and simply ignores
+    this paragraph's prose."""
     lines = [SYSTEM_PREAMBLE]
     for name, description in channels.items():
         lines.append(f"- {name}: {description}")
+    example = ", ".join(f'"{name}": <float>' for name in channels)
+    lines.append(
+        "\nRespond with ONLY a single JSON object, no other text, no "
+        "markdown code fences, no explanation -- exactly these keys: "
+        f"{{{example}}}."
+    )
     return "\n".join(lines)
 
 
@@ -46,7 +59,11 @@ GOAL_SYSTEM_PREAMBLE = (
     "rarely exceed about 0.3 -- a std around 0.15 already represents a "
     "strongly moving/sweeping quality, and 0.02 is essentially steady. "
     "Avoid requesting std values much above 0.3 unless you specifically "
-    "intend an extreme, likely-unreachable target."
+    "intend an extreme, likely-unreachable target.\n"
+    "Respond with ONLY a single JSON object, no other text, no markdown "
+    "code fences, no explanation -- exactly these six keys: "
+    '{"loud_mean": <float>, "loud_std": <float>, "bright_mean": <float>, '
+    '"bright_std": <float>, "pitch_mean": <float>, "pitch_std": <float>}.'
 )
 
 
@@ -54,5 +71,11 @@ def build_goal_system_prompt() -> str:
     """Fixed system prompt for goal-parsing (unlike build_system_prompt,
     this never varies per patch -- the 6 feature dimensions it describes
     are the same regardless of which instrument is running, since they
-    describe the SOUND, not any particular patch's CV channels)."""
+    describe the SOUND, not any particular patch's CV channels).
+
+    Ends with an explicit JSON-format instruction -- see build_system_prompt's
+    docstring for why this is needed as a fallback for servers with no
+    schema-enforced decoding (confirmed live against Qwen3-0.6B on
+    tt-local-generator's prompt_server.py, which otherwise returned prose
+    like '- loudness: [0.8, 0.2]' instead of JSON)."""
     return GOAL_SYSTEM_PREAMBLE

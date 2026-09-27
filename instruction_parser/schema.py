@@ -5,6 +5,30 @@ import pydantic
 from instruction_parser.base import RecipeParseError
 
 
+def _strip_markdown_code_fence(text: str) -> str:
+    """Strip a ```-delimited code fence (optionally ```json) wrapping the
+    whole response, if present. A real, observed quirk of local models with
+    no server-side schema/grammar enforcement (confirmed live against
+    Qwen3-0.6B on tt-local-generator's prompt_server.py: even with an
+    explicit "no markdown code fences" instruction in the system prompt,
+    roughly 40% of sampled responses still wrapped an otherwise perfectly
+    valid JSON body in ```json ... ``` -- not a JSON-validity problem, just
+    a wrapper json.loads chokes on). AnthropicInstructionParser never hits
+    this path (it gets real structured output from the SDK), so this is
+    purely a local-server-compatibility concern, but it belongs here rather
+    than duplicated in LocalInstructionParser since both validate_* entry
+    points are the shared "make raw text into valid JSON" layer."""
+    text = text.strip()
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1 :]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return text
+
+
 def build_recipe_model(channels: dict[str, str]) -> type[pydantic.BaseModel]:
     fields = {
         name: (float, pydantic.Field(ge=0.0, le=1.0, description=description))
@@ -17,7 +41,7 @@ def build_recipe_model(channels: dict[str, str]) -> type[pydantic.BaseModel]:
 
 def validate_recipe_json(raw_json: str, channels: dict[str, str]) -> dict[str, float]:
     try:
-        data = json.loads(raw_json)
+        data = json.loads(_strip_markdown_code_fence(raw_json))
     except json.JSONDecodeError as e:
         raise RecipeParseError(f"response was not valid JSON: {e}") from e
 
@@ -90,7 +114,7 @@ def validate_goal_json(raw_json: str) -> dict[str, float]:
     a specific message), against the fixed GoalFeatures schema instead of
     a per-call dynamic one."""
     try:
-        data = json.loads(raw_json)
+        data = json.loads(_strip_markdown_code_fence(raw_json))
     except json.JSONDecodeError as e:
         raise RecipeParseError(f"response was not valid JSON: {e}") from e
 

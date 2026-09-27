@@ -46,6 +46,15 @@ def test_validate_recipe_json_rejects_extra_channel():
     with pytest.raises(RecipeParseError):
         validate_recipe_json(raw, CHANNELS)
 
+def test_validate_recipe_json_strips_markdown_code_fence():
+    # Observed live against Qwen3-0.6B on tt-local-generator's
+    # prompt_server.py (no server-side schema enforcement): otherwise
+    # valid JSON is sometimes still wrapped in a ```json ... ``` fence.
+    raw = '```json\n' + json.dumps({"vco_freq": 0.2, "vca_level": 0.8}) + '\n```'
+    result = validate_recipe_json(raw, CHANNELS)
+    assert result == {"vco_freq": 0.2, "vca_level": 0.8}
+
+
 def test_build_recipe_model_works_for_different_channel_counts():
     # Confirms neither the schema builder nor the validator has a hidden
     # assumption about a fixed (e.g. 8-channel) set.
@@ -139,3 +148,11 @@ def test_validate_goal_json_rejects_extra_field():
     extra["extra_dim"] = 0.1
     with pytest.raises(RecipeParseError):
         validate_goal_json(json.dumps(extra))
+
+
+def test_validate_goal_json_strips_markdown_code_fence():
+    # Same real quirk as test_validate_recipe_json_strips_markdown_code_fence,
+    # confirmed live for parse_goal specifically against Qwen3-0.6B.
+    raw = '```json\n' + json.dumps(GOAL_VALUES) + '\n```'
+    result = validate_goal_json(raw)
+    assert result == GOAL_VALUES
