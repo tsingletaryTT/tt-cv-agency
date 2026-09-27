@@ -553,18 +553,26 @@ This task requires live VCV Rack process management, `gozer` chip leasing, and l
 - Consumes: `trajectory_collection.py`'s updated `__main__` (Task 1), `trajectory_model.py`'s updated `__main__` (Task 2), `trajectory_control_loop.py`'s updated `run_trajectory_control_loop`/`__main__` (Task 3).
 - Produces: nothing consumed by a later task — this is the plan's final step.
 
-- [ ] **Step 1: Confirm the live environment is healthy**
+- [ ] **Step 1: Confirm the live environment is healthy, and back up the original dataset/weights**
 
 Check VCV Rack is running against `patches/sequencer_test.vcv` (literal process name via `ps -eo pid,comm,args`, not a `pgrep -f` substring match — this project's own documented lesson about false negatives/positives in this sandboxed environment), `pw-link -l` shows `VCV Rack` routed through `vcv_loop`/`vcv_loop.monitor`, and `pactl get-default-sink`/`get-default-source` both correct. If not running: relaunch with `cd Rack2Free && LD_LIBRARY_PATH=. ./Rack ../patches/sequencer_test.vcv` (cwd MUST be `Rack2Free/`, per this project's documented `asset::systemDir` launch fix), after confirming `~/.local/share/Rack2/log.txt` ends in `END` (append it if not, to avoid the crash-recovery dialog).
+
+**Before recollecting anything**, copy the current (pre-tune-up) dataset and weights aside — `data/` is gitignored, so Step 2/3 below would otherwise permanently overwrite the only artifacts a real before/after comparison needs (final-review finding, Important #2):
+
+```bash
+cp data/sequencer_trajectory_dataset.npz data/stage3_tuneup_original_dataset.npz
+cp data/sequencer_trajectory_model_weights.npz data/stage3_tuneup_original_weights.npz
+```
+
+Then compute `estimate_action_gain_ratio_per_dimension` against this original (still-broken) model and dataset, as the actual baseline for Step 3's comparison — **not** the original Stage 3 final review's narrative "3-6x" figures, which were measured via a different method (a max-amplitude action sweep at a fixed neutral state) and are not directly comparable to this metric's real-validation-data methodology (final-review finding, Recommendation #4 — note this methodology difference honestly in the write-up rather than asserting either number is "more correct").
 
 - [ ] **Step 2: Recollect trajectory data**
 
 ```bash
-gozer run --chips 1 --who "claude:tt-cv-agency" --reason "Stage 3 tune-up: goal-spanning, window-aligned trajectory recollection" -- \
-  python3 trajectory_collection.py
+python3 trajectory_collection.py
 ```
 
-Run in the background (matches this project's established long-collection pattern), expect ~60 minutes given the new `aggregate_window_s=5.0`. Confirm on completion: `saved 600 transitions to data/sequencer_trajectory_dataset.npz` printed, no exceptions.
+No `gozer` lease needed — this script only drives VCV Rack over MIDI/audio (PipeWire), it never imports `tt_trajectory_inference`/`ttnn` (final-review finding, Minor — the original Stage 3 capstone also ran this step lease-free). Run in the background (matches this project's established long-collection pattern), expect ~60 minutes given the new `aggregate_window_s=5.0`. Confirm on completion: `saved 600 transitions to data/sequencer_trajectory_dataset.npz` printed, no exceptions.
 
 - [ ] **Step 3: Retrain and record the gain-ratio table**
 
@@ -572,7 +580,7 @@ Run in the background (matches this project's established long-collection patter
 python3 trajectory_model.py
 ```
 
-No hardware/gozer lease needed (pure PyTorch on CPU). Record the full printed table (MSE/R²/persistence R²/gain ratio per state dimension) for the write-up. Compare the gain-ratio column against the original Stage 3 final review's reported ratios (documented in `CLAUDE.md`'s "Stage 3 final-review correction" section, item 3) — report whatever the real comparison shows, whether the ratio improved, stayed flat, or didn't.
+No hardware/gozer lease needed (pure PyTorch on CPU). Record the full printed table (MSE/R²/persistence R²/gain ratio per state dimension) for the write-up. Compare the gain-ratio column against the **Step 1 baseline you just computed** (the same metric, same methodology, applied to the original model) — not the historical "3-6x" narrative figures. Report whatever the real comparison shows, whether the ratio improved, stayed flat, or didn't. If `weight_decay=1e-3` combined with `step_fraction=0.5` (Task 3) looks like it's slowing convergence in Step 4 below, say so plainly rather than attributing it to data coverage alone (final-review finding, Minor).
 
 - [ ] **Step 4: Live re-verification against the goal that scored worst this session**
 
