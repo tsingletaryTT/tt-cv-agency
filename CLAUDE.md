@@ -2324,3 +2324,162 @@ histogram comparison is the cheap, fast check to run *before* committing
 to a multi-hour recollection again: confirm the new seeding strategy
 actually reaches the target region in CV-sample space before spending the
 hour collecting trajectories from it.
+
+## Post-tune-up follow-up (2026-09-28): a real, well-evidenced normalization
+bug fixed — and the live result got worse again anyway
+
+Following up on the disconfirmed mixed-seeding result above, a quick
+"reachability" pre-check for a different fix (widening `trajectory_
+collection.py`'s `max_action`) turned up something more fundamental
+first, and is worth recording in full because of how it was found.
+
+### The methodology trap, and what it led to
+
+The first attempt at a fast pre-check (15 archive-seeded episodes, wider
+`max_action`) showed `loud_mean` capped at 0.41 — but that turned out to
+be a confound: those 15 archive members happened to exclude the
+archive's highest-`vca_level` settings entirely. Redoing it with the
+full 60-member archive still capped at ~0.41, which led to checking
+*why* directly: the archive's own **historically recorded** `loud_mean`
+for its highest-`vca_level` member was only 0.389 — confirming
+`vca_level` alone doesn't determine loudness in this patch — and the
+archive's 60 static points top out at `loud_mean=0.534` even
+historically. The original trajectory dataset's ~1.0 values only ever
+came from a 600-sample *random walk*, i.e. a rare tail event, not
+anything reliably reachable from a single seed point. This ruled out
+"does wider `max_action` help" as an answerable question from small
+random-walk samples at all (tail-event luck dominates), which is exactly
+why the investigation didn't try to answer it that way, and instead did
+a **systematic recon** — 150 *independent* uniform-random CV draws (not
+a walk), full production settle/window, zero clipped readings — the
+same methodology Phase 2 used to recalibrate `BRIGHTNESS_REF_HZ`.
+
+### The real finding: `LOUDNESS_REF_RMS` was never recalibrated for this patch
+
+The recon's real numbers: `loud_mean` median 0.031, p95 0.226, **max
+0.392** — meaning raw RMS never exceeded **0.157** in 150 samples, zero
+clipping. `LOUDNESS_REF_RMS=0.4` (in `features.py`) was calibrated
+during the "MIDI-CAT mappings were never actually committed" follow-up
+session against the *original single-oscillator* `bridge_test.vcv`
+patch (max observed RMS 0.365 at the time) — **before** the Minimoog and
+sequencer instrument existed, and never re-checked once
+`sequencer_test.vcv` replaced it. That means `loud_mean` has been
+silently compressed into roughly `[0, 0.39]` for this patch's *entire*
+history, independent of data-collection strategy, model, or search
+budget — every goal this whole project has ever tested against this
+patch with `loud_mean` above ~0.4, including the standard `0.5` test
+goal and this session's LLM-parsed `0.7`, was asking for something
+**physically unreachable on this instrument** the entire time.
+
+The recon's channel-correlation table also gave real, actionable signal
+`loud_mean` is jointly driven by `vcf_cutoff` (r=0.577) *and*
+`vca_level` (r=0.482), not `vca_level` alone; `pitch_mean` correlates
+far more with `vcf_cutoff` (r=0.680) than with `vco_freq` (r=0.030),
+suggesting the autocorrelation-based pitch estimator may be tracking the
+filter's resonant peak rather than the oscillator fundamental whenever
+the filter is engaged (plausible, not confirmed this pass); `bright_mean`
+behaves exactly as documented (`vcf_cutoff` r=0.697).
+
+**Fix**: `LOUDNESS_REF_RMS` recalibrated `0.4 → 0.175` (max `0.157` +
+~11% headroom, the same convention `BRIGHTNESS_REF_HZ` already uses),
+`features.py`. Two test fixtures broke as a direct, mechanical
+consequence and were fixed, not worked around: both
+`test_control_loop.py` and `test_trajectory_control_loop.py` had a
+`LinearFakeBackend`/`predict_fn` pair whose scale formula hardcoded the
+old `0.4` literal — now import the real constant. The CEM-based
+trajectory-loop test additionally needed its fixture's fixed audio
+amplitude lowered (`0.5 → 0.3`): under the new constant, `0.5` put
+`FakeCVBackend`'s default starting CV *exactly* at the loudness-clip
+ceiling, which is harmless for `run_control_loop`'s direct
+target-tracking (that test passed unmodified) but genuinely broke
+`cem_plan`'s random-candidate search — every candidate whose rollout
+doesn't escape the ceiling scores identically, so the search degenerates
+onto a flat landscape at iteration 1 and doesn't reliably escape it
+within a small test budget. A real, if narrow, illustration of a
+production risk worth remembering: CEM-based search can degrade sharply
+near a saturated/clipped starting state, independent of budget size for
+values close enough to the boundary.
+
+Also reverted `trajectory_collection.py`'s seeding from the disconfirmed
+mixed archive/uniform strategy back to archive-only, so this cycle's
+recollection isolates the normalization fix as the only real variable
+(`build_mixed_seed_cv_vectors` stays in the module, still correct, still
+tested — just unused by `__main__` for now).
+
+### Recollected, retrained, re-verified — coverage recovered, R² recovered, live result still didn't
+
+Recollection (archive-only, `aggregate_window_s=5.0`, corrected
+normalization) recovered coverage close to the *original* pre-tune-up
+dataset: `loud_mean` median/p95/max `0.131/0.555/0.989` vs. the original
+`0.145/0.570/1.000` — a real fix, confirmed, not just theorized.
+Retrained (`weight_decay=1e-3`, unchanged from the tune-up):
+
+| state dim | original R² | disconfirmed-cycle R² | this fix's R² | original gain | this fix's gain |
+|---|---|---|---|---|---|
+| `loud_mean` | 0.9596 | 0.4587 | **0.9150** | 0.7986 | 0.8283 |
+| `loud_std` | 0.4043 | 0.1077 | 0.4654 | 1.1133 | 0.3466 |
+| `bright_mean` | 0.9678 | 0.7347 | 0.8388 | 1.1834 | 1.2745 |
+| `bright_std` | 0.4789 | 0.4304 | 0.3667 | 0.8392 | 0.7337 |
+| `pitch_mean` | 0.8549 | 0.7683 | 0.8247 | 0.9652 | 0.6331 |
+| `pitch_std` | 0.2197 | 0.0311 | 0.0130 | 0.4568 | 0.2166 |
+
+R² mostly recovered to close to the original baseline (a real, large
+improvement over the disconfirmed cycle's across-the-board collapse),
+though not uniformly better than the true original — plausibly some
+run-to-run training variance (weight init isn't seeded in
+`trajectory_model.py`), not something this pass isolated further.
+
+**Live re-verification, same goal as every prior comparison this
+session** (`gozer run --chips 1 -- python3 trajectory_control_loop.py
+0.7 0.15 0.8 0.15 0.6 0.15`):
+
+```
+goal:   [0.700 0.150 0.800 0.150 0.600 0.150]
+final:  [0.321 0.025 0.255 0.055 0.938 0.171]
+```
+
+Per-dimension absolute error: `[0.379, 0.125, 0.545, 0.095, 0.338,
+0.021]`. **Euclidean norm: 0.762** — worse again, now the worst of all
+three attempts against this goal this session (0.593 pre-tune-up →
+0.710 disconfirmed mixed-seeding → **0.762** here). `bright_mean` is by
+far the largest single miss (0.545), while `pitch_mean` overshot high
+(0.938 vs. goal 0.6) and `pitch_std`/`loud_std` are both tight.
+
+Full regression check: `python3 -m pytest -q` → **157 passed, 7
+deselected**; `gozer run --chips 1 -- python3 -m pytest -q -m hardware`
+→ **7 passed, 157 deselected**. No regressions — the normalization fix
+is real and independently confirmed (recon numbers, restored coverage,
+recovered R²); the live result getting worse again is not evidence the
+fix was wrong.
+
+### Honest read: this specific goal may be an unusually hard, possibly
+near-infeasible joint target for this instrument
+
+Three attempts against the identical goal, three different outcomes, all
+worse than the pre-tune-up baseline. The pattern in *this* run's errors
+is the more informative part: `bright_mean`, `loud_mean`, and `pitch_mean`
+are all driven substantially by the *same* one or two channels
+(`vcf_cutoff` above all, per the recon's own correlation table) — asking
+for `loud_mean=0.7` AND `bright_mean=0.8` AND `pitch_mean=0.6`
+simultaneously may require a narrow, or possibly nonexistent, corner of
+the real 8-dimensional CV space where all three land close to their
+targets at once, not something more/better training data or a
+correctly-calibrated normalization constant can fix by itself. This is a
+plausible explanation, not a confirmed one — nobody has yet run the
+direct check (a joint-feasibility sweep: does *any* CV combination in the
+recon or archive data get all three within a reasonable band
+simultaneously?) that would confirm or refute it.
+
+**What this means for whoever picks this up next**: stop re-testing this
+one goal. Three genuinely different fixes (CEM budget/`current_cv`
+awareness, then this tune-up, then this normalization fix) have each
+been judged against the *identical* `[0.7, 0.15, 0.8, 0.15, 0.6, 0.15]`
+target, and the number has only ever gotten worse since the original
+`0.194` result the CEM-budget fix achieved against the *original* test
+goal (`[0.5, 0.05, 0.5, 0.1, 0.5, 0.05]`, not this one). Before spending
+another data-collection cycle: (1) run the joint-feasibility check this
+section just described directly against recon/archive data — cheap,
+no new collection needed; (2) if this goal turns out to be genuinely
+infeasible or extremely narrow, evaluate future fixes against a battery
+of goals checked for joint feasibility first, not one fixed hard case
+repeatedly.
