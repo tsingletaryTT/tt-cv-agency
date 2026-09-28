@@ -2158,3 +2158,169 @@ should benefit identically, but nobody has actually re-run it against a
 real LLM this session, so that specific claim stays open until someone
 does. The goal-coverage gap this run surfaced is exactly what the
 following Stage 3 tune-up work targets.
+
+## Stage 3 tune-up (2026-09-27): four bundled fixes, and an honest net
+regression — the goal-coverage hypothesis was wrong, not just unproven
+
+A four-part fix (spec: `docs/superpowers/specs/2026-09-27-stage3-tuneup-
+design.md`, plan: `docs/superpowers/plans/2026-09-27-stage3-tuneup.md`)
+targeting the three still-open items from the Stage 3 final-review punch
+list: goal-spanning trajectory data (mixed archive/uniform episode
+seeding in `trajectory_collection.py`), action-gain calibration
+(`weight_decay` regularization + a corrected `estimate_action_gain_ratio_
+per_dimension` diagnostic in `trajectory_model.py`), control-loop damping
+(`step_fraction` in `trajectory_control_loop.py`), plus aligning
+`aggregate_window_s` to 5.0 across both collection and control (matching
+`control_loop.py`). All three code tasks passed task-level review clean;
+a final whole-branch review (opus) caught a real Critical bug before any
+live run — the gain-ratio diagnostic as first written measured *total*
+predicted movement instead of the action's *isolated* contribution,
+proven by running it against the already-known-broken original weights
+and getting ~1.1-1.3x instead of the documented ~5.6x. Fixed (redefine as
+`model(s,a) - model(s,0)` against real observed delta) and re-verified
+before proceeding. Full detail on both fixes lives in this plan's
+now-deleted SDD workspace; git history (commits `0896aef`..`e433014`) is
+the permanent record.
+
+**A second real incident, self-resolved**: the Critical-fix subagent ran
+`pytest -q -m hardware` without a `gozer` lease (a real, if brief, unleased
+`ttnn`/device touch — this project's core hardware-safety rule, violated
+by a gap in how that dispatch was written, not carelessness on the
+subagent's part). `gozer status` confirmed all 4 chips `FREE` immediately
+after with no lasting harm; the hardware suite was re-run properly leased
+for a clean, independently-obtained confirmation (7 passed, matching).
+
+### The coverage hypothesis, tested directly and disconfirmed
+
+Before recollecting, the original (pre-tune-up) dataset and weights were
+backed up (`data/stage3_tuneup_original_{dataset,weights}.npz`) so a real
+before/after comparison would still be possible after `data/`'s gitignored
+files got overwritten. Checking the fresh 600-transition dataset against
+the old one, **before training on it**, found the opposite of what mixed
+seeding was supposed to achieve:
+
+```
+loud_mean histogram (10 bins, 0.0-1.0):
+  OLD (archive-only):  [237 119 105  50  41  20   8  12   6   2]
+  NEW (50% uniform):   [419 122  42  13   4   0   0   0   0   0]
+```
+
+The new dataset's `loud_mean` distribution is truncated below ~0.5 with
+**zero** samples above it, while the old one had a real (if thin) tail out
+to 1.0. Goal-region coverage got measurably worse, not better, against
+both the original mild test goal (`nearest` Euclidean distance 0.193 →
+0.246, `median` 0.567 → 0.646) and this session's live-LLM-parsed goal
+(`nearest` 0.493 → 0.629, `median` 0.911 → 1.002).
+
+**Why, in hindsight, obviously**: Stage 2's novelty archive exists
+*because* plain random sampling reliably misses rare/extreme regions of an
+8-dimensional CV space — that's the entire point of running a novelty
+search instead of just sampling uniformly. Replacing half the archive-
+seeded episodes with fresh uniform-random starts doesn't add "typical
+middle" coverage for free; it sacrifices exactly the hard-to-find-by-chance
+diversity Stage 2 was built to supply, and a 10-step/`max_action=0.15`
+episode still can't travel far enough from wherever a uniform draw happens
+to land. The fix's own reasoning (documented in the design spec's Decision
+1) assumed uniform CV sampling would at least reach the "typical" region a
+real goal wants — it doesn't, because the CV-to-feature mapping is
+strongly nonlinear and skewed (the same skew Phase 2's `BRIGHTNESS_REF_HZ`
+recalibration had already found for brightness specifically), so most of
+CV space maps to a narrow, low band of most features. This is a genuine,
+disconfirmed hypothesis, not an unlucky sample — it's worth writing down so
+nobody repeats this exact fix expecting a different result.
+
+### Retrained model: honest numbers, not better across the board
+
+| state dim | old R² | new R² | old persist R² | new persist R² | old gain ratio | new gain ratio |
+|---|---|---|---|---|---|---|
+| `loud_mean` | 0.9596 | **0.4587** | 0.9105 | 0.9100 | 0.7986 | 0.4457 |
+| `loud_std` | 0.4043 | **0.1077** | 0.7393 | 0.6490 | 1.1133 | 0.2600 |
+| `bright_mean` | 0.9678 | **0.7347** | 0.8309 | 0.8369 | 1.1834 | 1.0954 |
+| `bright_std` | 0.4789 | 0.4304 | 0.4379 | 0.4095 | 0.8392 | 0.5332 |
+| `pitch_mean` | 0.8549 | **0.7683** | 0.8015 | 0.7624 | 0.9652 | 0.4755 |
+| `pitch_std` | 0.2197 | **0.0311** | -0.0700 | 0.0275 | 0.4568 | 0.0318 |
+
+("old" = the corrected `estimate_action_gain_ratio_per_dimension` computed
+against the backed-up original model/dataset, per the final review's own
+ruling — not the original narrative "3-6x" figures, which were measured a
+different way and aren't directly comparable.)
+
+Every dimension's held-out R² got **worse**, not better — consistent with
+training on a dataset whose `loud_mean` range just got cut roughly in
+half. The gain-ratio column also moved the wrong direction on 5 of 6
+dimensions: instead of converging toward the ideal 1.0, most dimensions
+moved *further* from it, and several flipped from over-scaled (>1.0, the
+original documented failure) to under-scaled (<1.0) — consistent with
+`weight_decay=1e-3` combined with a narrower, less-informative dataset
+pushing the model toward predicting less movement overall, not more
+accurately-scaled movement. `bright_mean` is the one dimension whose gain
+ratio moved (slightly) toward 1.0 (1.1834 → 1.0954).
+
+**This capstone bundled four changes at once** (mixed seeding, window
+alignment, `weight_decay`, `step_fraction`) and cannot cleanly attribute
+the R²/gain-ratio regression to any single one from this run alone — only
+the coverage-histogram comparison above isolates one effect cleanly (mixed
+seeding, checked before any training happened). A future pass wanting to
+know which of the other three changes helped or hurt would need to ablate
+them one at a time, not re-run this same bundled combination.
+
+### Live re-verification: worse than the number this tune-up was built to beat
+
+Same live goal as this session's own live-LLM run above (`instruction_to_
+goal.py`'s parsed goal for "make it bright and steady"), same procedure
+(`gozer run --chips 1 -- python3 trajectory_control_loop.py 0.7 0.15 0.8
+0.15 0.6 0.15`), against the same `sequencer_test.vcv` patch:
+
+```
+goal:  [0.700 0.150 0.800 0.150 0.600 0.150]
+final: [0.110 0.005 0.470 0.150 0.758 0.172]
+```
+
+Per-dimension absolute error: `[0.590, 0.145, 0.330, 0.0004, 0.158,
+0.022]`. **Euclidean norm of the error: 0.710** — worse than the 0.593
+this tune-up set out to improve on, and worse than every other number in
+this project's history except nothing (this is now the worst live result
+recorded). `bright_std` converged almost exactly (error 0.0004) and
+`pitch_std`/`loud_std` are both tight — but `loud_mean` (0.590) and
+`bright_mean` (0.330) are badly off, consistent with `loud_mean`'s
+narrowed training coverage and the across-the-board R² drop above.
+Chip lease self-resolved to `FREE` after a longer-than-usual (~15s) reset
+delay — investigated (process alive, log showed active PCI-BDF reset in
+progress, not stuck) rather than force-released, same discipline as every
+prior lease-timing question in this project.
+
+Full regression check: `python3 -m pytest -q` → **157 passed, 7
+deselected**; `gozer run --chips 1 -- python3 -m pytest -q -m hardware` →
+**7 passed, 157 deselected**. No regressions — every line of new code
+this tune-up added works exactly as designed; the live-hardware result is
+worse for reasons the design didn't anticipate, not because anything is
+broken.
+
+### Net assessment: a real, useful negative result — not a "tune-up
+complete"
+
+Every mechanism this pass built is now genuinely in place and correct:
+`step_fraction` damping, `weight_decay` regularization, the corrected
+(and now actually-gating) action-gain-ratio diagnostic, and the
+window-alignment that finally makes a Stage-0-vs-Stage-3 comparison use
+the same measuring instrument. None of that is wasted — it's exactly the
+scaffolding a better data-collection strategy would need to show its
+effect cleanly. But the one load-bearing hypothesis this pass tested
+directly — that mixing in uniform-random episode starts would improve
+goal-region coverage — is **disconfirmed by direct measurement**, and
+every downstream number (R², gain ratio, live Euclidean error) moved
+the wrong way alongside it. Per this project's own standing rule, none of
+`weight_decay=1e-3`, `step_fraction=0.5`, or the 50/50 seeding split were
+retuned after seeing this result to force a better-looking number.
+
+**What this actually points to for a future pass**: the real fix for
+goal-coverage is not "replace some archive seeding with uniform sampling"
+— it's something that can reach the specific region a goal names, e.g.
+seeding episodes from CV points *closer to the current live goal* (a
+genuinely goal-directed sampling strategy), or extending Stage 2's own
+novelty search with a secondary reachability/coverage objective instead
+of swapping its output out. Whichever route is chosen, this section's
+histogram comparison is the cheap, fast check to run *before* committing
+to a multi-hour recollection again: confirm the new seeding strategy
+actually reaches the target region in CV-sample space before spending the
+hour collecting trajectories from it.
