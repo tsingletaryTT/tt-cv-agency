@@ -19,10 +19,21 @@ def build_system_prompt(channels: dict[str, str]) -> str:
     necessary against tt-local-generator's prompt_server.py, a bare
     generate() wrapper with no grammar constraint) -- AnthropicInstructionParser
     gets real structured output from the SDK regardless and simply ignores
-    this paragraph's prose."""
+    this paragraph's prose.
+
+    Each channel line repeats "(0 to 1, not real-world units)" locally,
+    not just once in the preamble -- confirmed necessary live against
+    Qwen3-0.6B: asked for "acid bass" against a channel described as
+    "Base pitch of the bass voice. Low = deep bass, high = higher
+    register," it reliably returned real Hz values (440, 200, 20) for
+    vco_freq every time across repeated attempts, not just once. A
+    channel description using frequency/pitch language pulls a small
+    model toward a well-known real-world numeric convention (440 is
+    concert-pitch A4) strongly enough to override a [0,1] constraint
+    stated only once, far away, in the preamble."""
     lines = [SYSTEM_PREAMBLE]
     for name, description in channels.items():
-        lines.append(f"- {name}: {description}")
+        lines.append(f"- {name}: {description} (0 to 1, not real-world units)")
     example = ", ".join(f'"{name}": <float>' for name in channels)
     lines.append(
         "\nRespond with ONLY a single JSON object, no other text, no "
