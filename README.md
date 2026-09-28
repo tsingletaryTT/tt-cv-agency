@@ -133,6 +133,55 @@ oscillator-tracking bug caught and fixed along the way.
 
 ![Minimoog-equivalent patch](docs/journal/2026-09-07-minimoog-patch.png)
 
+**Stages 0-3 and closing the loop:** a four-stage roadmap took the project
+from a static single-point reflex controller to trajectory-predicting,
+natural-language-goal-directed control. **Stage 0** rebuilt the instrument
+with real temporal behavior (`patches/sequencer_test.vcv` — a self-clocked
+sequencer, filter-sweep LFO, filter envelope) and replaced the per-instant
+3-feature read with a windowed `[mean, std]` aggregation over a whole
+loop/period (`features.read_aggregated_window`), verified end-to-end
+against real hardware (Euclidean goal error 0.222, an honest smoke-test
+result, not a claim of good control). **Stage 1** added LLM-based
+instruction parsing (`instruction_parser/`, `instruction_to_preset.py`).
+**Stage 2** added novelty-search exploration (`novelty_archive.py`,
+`explore.py`) — a live run filled a 60-member archive with genuinely
+different-sounding, non-degenerate CV settings, verified by direct
+feature-vector inspection. **Stage 3** added a learned forward-dynamics
+model + CEM planner (`trajectory_model.py`, `cem_planner.py`,
+`trajectory_control_loop.py`) for multi-step trajectory-following control;
+its first live result (0.314) was initially *worse* than Stage 0's simple
+reflex baseline, root-caused to undersized CEM search budget and missing
+cumulative-CV-headroom awareness (both since fixed — a follow-up pass
+brought it to 0.194, beating both prior baselines). **Closing the loop**
+connected Stage 1's instruction parsing directly to Stage 3's planner
+(`instruction_to_goal.py`), so an instruction steers the patch toward a
+goal continuously instead of setting one static recipe.
+
+**Live-LLM verification (2026-09-27):** the whole pipeline was run
+end-to-end against a real local LLM for the first time — Qwen3-0.6B,
+CPU-only (deliberately kept off the Tenstorrent chips so it never
+competes with the native `ttnn` control-loop work for hardware). This
+surfaced and fixed a real integration bug (the local-server path needed
+an explicit JSON-format instruction and markdown-code-fence stripping,
+since not every OpenAI-compatible server enforces a response schema the
+way Anthropic's SDK does) — see `instruction_parser/prompts.py` and
+`schema.py`. `instruction_to_goal.py`'s live-LLM gap (open since Stage 1)
+is now closed; `instruction_to_preset.py`'s equivalent gap is not
+independently re-verified.
+
+**Stage 3 tune-up (2026-09-27):** a follow-up pass added `weight_decay`
+regularization, `step_fraction` control-loop damping, and mixed
+archive/uniform episode seeding intended to improve trajectory-model
+training-data coverage. The seeding hypothesis was tested directly and
+**disconfirmed** — coverage of the goal region got measurably worse, not
+better, and the live re-verification result regressed (0.593 → 0.710).
+This is reported as a genuine negative result, not spun as progress — see
+`CLAUDE.md`'s "Stage 3 tune-up" section for the full honest numbers and
+what a better fix would need to do differently. All the new mechanisms
+(damping, regularization, a corrected action-gain-ratio diagnostic) work
+correctly; the regression traces to a wrong hypothesis about how CV
+settings map to measured features, not broken code.
+
 ## Progress journal
 
 `docs/journal/` holds dated screenshots of the patch as it's evolved —
@@ -240,11 +289,15 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   short multi-step episodes (a start CV point, then a sequence of small
   random deltas), logging each `(state, action, next_state)` transition —
   the current windowed feature read, the actually-applied CV delta (after
-  clipping to `[0, 1]`), and the resulting next feature read. Episode
-  starts are seeded from Stage 2's `data/sequencer_novelty_archive.npz`
-  when present (cycling round-robin through its archived CV vectors) so
-  trajectories begin from points already known to sound meaningfully
-  different, falling back to uniform-random starts otherwise.
+  clipping to `[0, 1]`), and the resulting next feature read.
+  `build_mixed_seed_cv_vectors` seeds episode starts from a mix of Stage
+  2's `data/sequencer_novelty_archive.npz` (half) and fresh uniform-random
+  CV vectors (half) when the archive is present, falling back to
+  uniform-random starts entirely otherwise. The 2026-09-27 "Stage 3
+  tune-up" tested this mixed-seeding strategy directly and found it
+  **narrows** goal-region coverage rather than widening it — see
+  `CLAUDE.md`'s "Stage 3 tune-up" section; a real, useful negative result,
+  not yet superseded by a better seeding strategy.
 - `trajectory_model.py` — `TrajectoryPredictor`: a 3-layer MLP mapping
   `(state, action) -> next_state`, i.e. a learned one-step forward dynamics
   model rather than `model.py`'s single-shot inverse (features → CV)
@@ -252,14 +305,23 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   MSE/R² discipline as `model.py`, reported against a predict-the-training-
   mean baseline; `save_predictor_weights` records the action-channel order
   the model was trained against so a later inference engine can verify it
-  wasn't fed actions in the wrong order.
+  wasn't fed actions in the wrong order. `train_predictor` takes an
+  optional `weight_decay` (L2 regularization, default `0.0` = unchanged
+  behavior) against a documented action-gain over-scaling risk;
+  `estimate_action_gain_ratio_per_dimension` compares the model's
+  *action-only* predicted movement (isolated via `model(s,a) - model(s,0)`)
+  against real observed movement, per state dimension, as a permanent,
+  tested diagnostic for that exact failure mode.
 - `cem_planner.py` — `cem_plan`: a pure-numpy Cross-Entropy Method search
   over multi-step action sequences. Samples a batch of candidate action
   sequences from a Gaussian, rolls each one forward through a supplied
   `predict_fn` (any `(states, actions) -> next_states` batched dynamics
-  model), scores each rollout's final state against a goal by negative
-  Euclidean distance, refits the sampling distribution to the elite
-  candidates, and repeats for a fixed number of iterations before
+  model) while clipping each step's delta against a running per-candidate
+  CV tally (so a planned cumulative move never exceeds what the real `[0,
+  1]` CV range could actually deliver) and clipping rolled-forward states
+  to `[0, 1]`, scores each rollout's final state against a goal by
+  negative Euclidean distance, refits the sampling distribution to the
+  elite candidates, and repeats for a fixed number of iterations before
   returning the first action of the best mean sequence found.
 - `tt_trajectory_inference.py` — `TrajectoryTTInferenceEngine`: loads a
   trained `TrajectoryPredictor`'s weights and runs its forward pass
@@ -272,9 +334,13 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   perceive-plan-act loop built on the trajectory model instead of a direct
   inverse mapping — read the current windowed feature state, run `cem_plan`
   against a learned forward-dynamics `predict_fn` and a goal feature
-  vector to find the best next action, apply that action's CV delta, and
-  repeat, skipping the (still-recorded) planning step entirely on
-  iterations already within `convergence_threshold` of the goal.
+  vector to find the best next action, apply only a `step_fraction`
+  (default `0.5`) of that action's CV delta — damping per-iteration
+  planner noise so the loop can settle instead of random-walking around
+  the goal — and repeat, skipping the (still-recorded) planning step
+  entirely on iterations already within `convergence_threshold` of the
+  goal. Default `aggregate_window_s` is `5.0`, matching `control_loop.py`'s
+  own window.
 - `instruction_to_goal.py` — closing-the-loop's capstone CLI: parses a
   natural-language instruction into a *feature-space* goal (via a chosen
   `InstructionParser.parse_goal(instruction)` — `--llm anthropic|local`,
@@ -340,6 +406,13 @@ Python 3.12, `torch`, `ttnn` (from a `tt-metal` checkout), `mido`,
 the current test instrument, with the [MIDI-CAT](https://github.com/stoermelder/vcvrack-packone)
 module mapped to the patch's CV-controllable parameters over a MIDI loopback
 port.
+
+`--llm local` (either `instruction_to_preset.py` or `instruction_to_goal.py`)
+talks to any OpenAI-compatible chat-completions server via `--base-url`; it
+does not need to be Tenstorrent-hosted. Verified live (2026-09-27) against
+Qwen3-0.6B running CPU-only — deliberately kept off the Tenstorrent chips
+so a local LLM never competes with the native `ttnn` control-loop work for
+hardware.
 
 Any `ttnn` use goes through a chip lease (`gozer`, this machine's cooperative
 Tenstorrent chip-leasing tool) — never a bare unleased `import ttnn`.
