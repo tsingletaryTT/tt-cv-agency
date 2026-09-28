@@ -364,6 +364,14 @@ a quick visual record alongside the prose history in `CLAUDE.md`.
   measured RMS).
 - `tests/` — the test suite for everything above; `FakeCVBackend` keeps most of
   it runnable without a live VCV Rack instance.
+- `scripts/vcv-stack` — start/stop/status for the runtime stack (VCV Rack +
+  the PipeWire audio routing that makes it both audible and capturable by
+  Python at once, plus a read-only check on the local LLM server). Encodes
+  every hand-debugged launch/routing gotcha in this file's history as actual
+  code instead of a manual checklist: `./scripts/vcv-stack up`,
+  `./scripts/vcv-stack status`, `./scripts/vcv-stack down`,
+  `./scripts/vcv-stack relink` (re-fix audio routing after relaunching Rack
+  by hand), `--help` for the rest.
 - `docs/superpowers/specs/`, `docs/superpowers/plans/` — the design spec and
   the task-by-task implementation plan this was built from.
 - `CLAUDE.md` — a detailed build log: what was tried, what broke, and why —

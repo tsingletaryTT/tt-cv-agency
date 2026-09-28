@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+# scripts/vcv-stack -- start/stop/status for this project's runtime stack:
+# VCV Rack itself, the PipeWire audio routing that makes it both audible
+# and capturable by Python at the same time, and (read-only by default) the
+# local LLM server some scripts use for --llm local.
+#
+# Every step here encodes a real, previously-hand-debugged gotcha from this
+# project's history (see CLAUDE.md for the full stories) rather than the
+# "obvious" naive version of that step:
+#   - Rack must be launched with cwd=Rack2Free/, or asset::systemDir
+#     resolves relative to the invoking shell's cwd instead of the
+#     executable's own directory, and Rack refuses to start at all.
+#   - A non-graceful exit leaves ~/.local/share/Rack2/log.txt without a
+#     trailing "END" marker, which trips an invisible-on-Wayland
+#     crash-recovery dialog on next launch that blocks startup with no
+#     visible symptom. Checked and fixed before every launch.
+#   - `pgrep -f`/checking for a "Rack" substring is not a reliable process
+#     check in this sandboxed environment (has been seen to resolve to
+#     `bash`, or to match this very script's own command line) -- this
+#     script matches the literal `comm` field via `ps -eo pid,comm` instead.
+#   - Setting the system default sink to a capture-only null-sink (needed
+#     for Python's `sounddevice` to read VCV's audio) also silently routes
+#     everything else, including VCV's real output, away from real
+#     speakers/HDMI. Fixed with a combine-sink that fans out to both.
+#   - That combine-sink only catches NEW streams by default -- every time
+#     Rack itself is relaunched, its output stream reconnects directly to
+#     the bare capture sink again (a PipeWire per-client remembered-target
+#     quirk, not the actual default-sink pointer), silently bypassing the
+#     audible leg. This script explicitly relinks it every time, not just
+#     once at setup.
+#
+# Usage:
+#   scripts/vcv-stack up               launch Rack + fix audio routing (idempotent)
+#   scripts/vcv-stack down             stop Rack, tear down routing, restore your original audio defaults
+#   scripts/vcv-stack restart          down then up
+#   scripts/vcv-stack status           report on every component, no side effects
+#   scripts/vcv-stack relink           just re-fix audio routing (e.g. after you relaunched Rack by hand)
+#   scripts/vcv-stack up --llm         also start the local LLM server if it's not already up
+#   scripts/vcv-stack down --llm       also stop the local LLM server (off by default -- it's a
+#                                       shared resource other work may depend on, not something
+#                                       "down" tears down just because this stack used it)
+#
+# Environment overrides:
+#   VCV_STACK_PATCH   patch to launch (default: patches/sequencer_test.vcv)
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PATCH="${VCV_STACK_PATCH:-patches/sequencer_test.vcv}"
+STATE_FILE="$REPO_ROOT/.vcv-stack-state"
+RACK_LOG="$HOME/.local/share/Rack2/log.txt"
+NULL_SINK_NAME="vcv_loop"
+COMBINE_SINK_NAME="vcv_and_hdmi"
+LLM_HEALTH_URL="http://localhost:8001/health"
+LLM_DIR="$HOME/code/tt-local-generator"
+LLM_VENV_PY="$HOME/.tenstorrent-venv/bin/python3"
+LLM_MODEL="Qwen/Qwen3-0.6B"
+RACK_STARTUP_LOG="/tmp/vcv-stack-rack.log"
+LLM_STARTUP_LOG="/tmp/vcv-stack-llm.log"
+
+log() { echo "$@"; }
+err() { echo "$@" >&2; }
+
+# ---- Rack process -----------------------------------------------------
+
+find_rack_pid() {
+  # Literal comm-field match. Never `pgrep -f "Rack"` -- that substring
+  # match has been seen to resolve to `bash` in this sandbxed environment,
+  # or to match this very script's own invocation.
+  ps -eo pid,comm | awk '$2 == "Rack" {print $1; exit}'
+}
+
+ensure_log_ends_clean() {
+  [ -f "$RACK_LOG" ] || return 0
+  if [ "$(tail -c 3 "$RACK_LOG" 2>/dev/null)" != "END" ]; then
+    log "  log.txt didn't end in END (non-graceful last exit) -- appending it so the crash-recovery dialog doesn't block this launch"
+    printf "END" >>"$RACK_LOG"
+  fi
+}
+
+start_rack() {
+  local pid
+  pid="$(find_rack_pid)"
+  if [ -n "$pid" ]; then
+    log "  already running (pid $pid)"
+    return 0
+  fi
+
+  ensure_log_ends_clean
+  log "  launching Rack with $PATCH ..."
+  (cd "$REPO_ROOT/Rack2Free" && LD_LIBRARY_PATH=. nohup ./Rack "../$PATCH" >"$RACK_STARTUP_LOG" 2>&1 &)
+
+  local waited=0
+  while [ "$waited" -lt 20 ]; do
+    sleep 1
+    waited=$((waited + 1))
+    pid="$(find_rack_pid)"
+    [ -n "$pid" ] && break
+  done
+
+  if [ -z "$pid" ]; then
+    err "  ERROR: Rack did not start within ${waited}s -- see $RACK_STARTUP_LOG"
+    return 1
+  fi
+  log "  started (pid $pid)"
+}
+
+stop_rack() {
+  local pid
+  pid="$(find_rack_pid)"
+  if [ -z "$pid" ]; then
+    log "  not running"
+    return 0
+  fi
+  log "  stopping Rack (pid $pid)"
+  kill -TERM "$pid" 2>/dev/null
+  local waited=0
+  while [ "$waited" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    err "  still alive after ${waited}s, sending KILL"
+    kill -KILL "$pid" 2>/dev/null
+  fi
+  # A non-graceful exit (this project's Rack build has been seen to log a
+  # crash-style stack trace on plain SIGTERM rather than exiting cleanly)
+  # leaves no trailing END marker -- fix it now so the NEXT launch (by this
+  # script or by hand) doesn't hit the crash-recovery dialog.
+  ensure_log_ends_clean
+}
+
+# ---- Audio routing ------------------------------------------------------
+
+module_id_for_sink() {
+  # $1: sink name as given to sink_name= when it was loaded.
+  pactl list modules short | awk -v n="$1" '$0 ~ ("sink_name="n"[ \t]") || $0 ~ ("sink_name="n"$") {print $1; exit}'
+}
+
+discover_real_sink() {
+  # The one sink that isn't one of our own virtual ones -- discovered, not
+  # hardcoded, since the real hardware sink's name is machine-specific.
+  pactl list sinks short | awk -v a="$NULL_SINK_NAME" -v b="$COMBINE_SINK_NAME" \
+    '{if ($2 != a && $2 != b) print $2}' | head -n1
+}
+
+setup_audio_routing() {
+  # Capture the pre-existing defaults exactly once, before this script
+  # (across however many `up` calls happen before the next `down`) changes
+  # anything -- `down` restores these, not a guess at what they "should" be.
+  # Only correct if THIS SCRIPT is what first touches the routing: if the
+  # defaults were already changed by hand before the first `up`, this
+  # checkpoints the already-modified state as "original" (hit exactly once
+  # in this project's history -- fixed then by hand-editing $STATE_FILE to
+  # the real pre-session values before the next `down`). Nothing this
+  # script can detect on its own; worth a sanity glance at $STATE_FILE if
+  # `down` ever restores something that doesn't look right.
+  if [ ! -f "$STATE_FILE" ]; then
+    local orig_sink orig_source
+    orig_sink="$(pactl get-default-sink 2>/dev/null || true)"
+    orig_source="$(pactl get-default-source 2>/dev/null || true)"
+    printf 'orig_sink=%s\norig_source=%s\n' "$orig_sink" "$orig_source" >"$STATE_FILE"
+    log "  saved your current defaults (sink=$orig_sink source=$orig_source) to restore on 'down'"
+  fi
+
+  if [ -z "$(module_id_for_sink "$NULL_SINK_NAME")" ]; then
+    log "  loading capture sink ($NULL_SINK_NAME)"
+    pactl load-module module-null-sink \
+      sink_name="$NULL_SINK_NAME" sink_properties=device.description=VCV_Loopback >/dev/null
+  else
+    log "  capture sink already loaded"
+  fi
+
+  if [ -z "$(module_id_for_sink "$COMBINE_SINK_NAME")" ]; then
+    local real_sink
+    real_sink="$(discover_real_sink)"
+    if [ -z "$real_sink" ]; then
+      err "  ERROR: couldn't find a real (non-virtual) sink to pair with $NULL_SINK_NAME"
+      return 1
+    fi
+    log "  loading combine sink ($COMBINE_SINK_NAME -> $NULL_SINK_NAME + $real_sink)"
+    pactl load-module module-combine-sink \
+      sink_name="$COMBINE_SINK_NAME" slaves="$NULL_SINK_NAME,$real_sink" >/dev/null
+  else
+    log "  combine sink already loaded"
+  fi
+
+  pactl set-default-sink "$COMBINE_SINK_NAME"
+  pactl set-default-source "${NULL_SINK_NAME}.monitor"
+  log "  defaults set: sink=$COMBINE_SINK_NAME source=${NULL_SINK_NAME}.monitor"
+}
+
+teardown_audio_routing() {
+  if [ -f "$STATE_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
+    if [ -n "${orig_sink:-}" ]; then
+      pactl set-default-sink "$orig_sink" 2>/dev/null && log "  restored default sink: $orig_sink"
+    fi
+    if [ -n "${orig_source:-}" ]; then
+      pactl set-default-source "$orig_source" 2>/dev/null && log "  restored default source: $orig_source"
+    fi
+    rm -f "$STATE_FILE"
+  else
+    log "  no saved defaults found (nothing to restore -- 'up' was never run, or state was already cleared)"
+  fi
+
+  local combine_id null_id
+  combine_id="$(module_id_for_sink "$COMBINE_SINK_NAME")"
+  if [ -n "$combine_id" ]; then
+    pactl unload-module "$combine_id" && log "  unloaded combine sink"
+  fi
+  null_id="$(module_id_for_sink "$NULL_SINK_NAME")"
+  if [ -n "$null_id" ]; then
+    pactl unload-module "$null_id" && log "  unloaded capture sink"
+  fi
+}
+
+relink_rack_output() {
+  # Idempotent: pw-link errors (harmlessly) if the link already exists or
+  # doesn't exist to disconnect -- both directions are suppressed.
+  local pid
+  pid="$(find_rack_pid)"
+  if [ -z "$pid" ]; then
+    log "  Rack isn't running, nothing to relink"
+    return 0
+  fi
+  for ch in FL FR; do
+    pw-link -d "VCV Rack:output_$ch" "${NULL_SINK_NAME}:playback_$ch" >/dev/null 2>&1
+    pw-link "VCV Rack:output_$ch" "${COMBINE_SINK_NAME}:playback_$ch" >/dev/null 2>&1
+  done
+  if pw-link -l 2>/dev/null | grep -q "VCV Rack:output_FL" ; then
+    if pw-link -l 2>/dev/null | grep -A1 "VCV Rack:output_FL" | grep -q "$COMBINE_SINK_NAME"; then
+      log "  VCV Rack output confirmed routed through $COMBINE_SINK_NAME"
+    else
+      err "  WARNING: couldn't confirm VCV Rack's output is linked through $COMBINE_SINK_NAME -- check 'pw-link -l' by hand"
+    fi
+  fi
+}
+
+# ---- Local LLM server (status always; start/stop only with --llm) -----
+
+llm_healthy() {
+  curl -s -o /dev/null --max-time 2 "$LLM_HEALTH_URL"
+}
+
+llm_status_line() {
+  if llm_healthy; then
+    curl -s --max-time 2 "$LLM_HEALTH_URL"
+  else
+    echo "not reachable at $LLM_HEALTH_URL"
+  fi
+}
+
+start_llm() {
+  if llm_healthy; then
+    log "  already reachable at $LLM_HEALTH_URL"
+    return 0
+  fi
+  if [ ! -d "$LLM_DIR" ] || [ ! -x "$LLM_VENV_PY" ]; then
+    err "  can't start it automatically ($LLM_DIR or $LLM_VENV_PY not found) -- start it by hand"
+    return 1
+  fi
+  log "  starting local LLM server ($LLM_MODEL on CPU, port 8001)..."
+  (cd "$LLM_DIR" && nohup "$LLM_VENV_PY" app/prompt_server.py --model "$LLM_MODEL" --port 8001 --host 0.0.0.0 >"$LLM_STARTUP_LOG" 2>&1 &)
+  local waited=0
+  while [ "$waited" -lt 60 ]; do
+    sleep 2
+    waited=$((waited + 2))
+    llm_healthy && break
+  done
+  if llm_healthy; then
+    log "  ready after ${waited}s"
+  else
+    err "  ERROR: not reachable after ${waited}s -- see $LLM_STARTUP_LOG (model loading can take a while on CPU)"
+    return 1
+  fi
+}
+
+stop_llm() {
+  # Kill by the literal invoking command, not a loose pgrep -f substring --
+  # same discipline as find_rack_pid, for the same reason.
+  local pid
+  pid="$(ps -eo pid,args | awk '/prompt_server\.py/ && !/awk/ {print $1; exit}')"
+  if [ -z "$pid" ]; then
+    log "  not running (or not started by this script)"
+    return 0
+  fi
+  log "  stopping local LLM server (pid $pid)"
+  kill -TERM "$pid" 2>/dev/null
+}
+
+# ---- Status --------------------------------------------------------------
+
+cmd_status() {
+  log "== VCV Rack =="
+  local pid
+  pid="$(find_rack_pid)"
+  if [ -n "$pid" ]; then
+    log "  running (pid $pid), patch: $PATCH"
+  else
+    log "  not running"
+  fi
+
+  log "== Audio routing =="
+  log "  default sink:   $(pactl get-default-sink 2>/dev/null || echo '?')"
+  log "  default source: $(pactl get-default-source 2>/dev/null || echo '?')"
+  [ -n "$(module_id_for_sink "$NULL_SINK_NAME")" ] && log "  capture sink ($NULL_SINK_NAME): loaded" || log "  capture sink ($NULL_SINK_NAME): NOT loaded"
+  [ -n "$(module_id_for_sink "$COMBINE_SINK_NAME")" ] && log "  combine sink ($COMBINE_SINK_NAME): loaded" || log "  combine sink ($COMBINE_SINK_NAME): NOT loaded"
+  if [ -n "$pid" ]; then
+    if pw-link -l 2>/dev/null | grep -A1 "VCV Rack:output_FL" | grep -q "$COMBINE_SINK_NAME"; then
+      log "  VCV Rack output: routed through $COMBINE_SINK_NAME (audible + capturable)"
+    else
+      log "  VCV Rack output: NOT routed through $COMBINE_SINK_NAME -- run '$0 relink'"
+    fi
+  fi
+
+  log "== Local LLM server =="
+  log "  $(llm_status_line)"
+}
+
+# ---- Top-level commands ---------------------------------------------------
+
+cmd_up() {
+  local with_llm=0
+  [ "${1:-}" = "--llm" ] && with_llm=1
+
+  log "== VCV Rack =="
+  start_rack || return 1
+
+  log "== Audio routing =="
+  setup_audio_routing || return 1
+  relink_rack_output
+
+  log "== Local LLM server =="
+  if [ "$with_llm" = 1 ]; then
+    start_llm
+  else
+    llm_healthy && log "  already reachable at $LLM_HEALTH_URL" || log "  not reachable -- pass --llm to start it"
+  fi
+}
+
+cmd_down() {
+  local with_llm=0
+  [ "${1:-}" = "--llm" ] && with_llm=1
+
+  log "== VCV Rack =="
+  stop_rack
+
+  log "== Audio routing =="
+  teardown_audio_routing
+
+  log "== Local LLM server =="
+  if [ "$with_llm" = 1 ]; then
+    stop_llm
+  else
+    log "  left running (shared resource -- pass --llm to stop it too)"
+  fi
+}
+
+cmd_relink() {
+  log "== Audio routing =="
+  relink_rack_output
+}
+
+usage() {
+  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    up) cmd_up "$@" ;;
+    down) cmd_down "$@" ;;
+    restart) cmd_down "$@"; cmd_up "$@" ;;
+    status) cmd_status ;;
+    relink) cmd_relink ;;
+    -h|--help|"") usage ;;
+    *) err "unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

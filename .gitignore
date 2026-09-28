@@ -19,3 +19,7 @@ generated/
 
 # subagent-driven-development scratch workspace (ledgers, briefs, reports)
 .superpowers/
+
+# scripts/vcv-stack's own runtime state (the default sink/source it
+# found before touching anything, so `down` can restore them exactly)
+.vcv-stack-state
