@@ -1,6 +1,7 @@
 import numpy as np
 from backends.base import FakeCVBackend
 from control_loop import run_control_loop
+from features import LOUDNESS_REF_RMS
 
 
 class LinearFakeBackend(FakeCVBackend):
@@ -19,8 +20,10 @@ class LinearFakeBackend(FakeCVBackend):
 def fake_predict(target_features: np.ndarray) -> np.ndarray:
     # Correctly inverts LinearFakeBackend's known feature function so a
     # converged CV genuinely reproduces the target loudness feature:
-    # feature = rms/REF_RMS = (level * 0.5 / sqrt(2)) / 0.4 = level * scale.
-    scale = 0.5 / (0.4 * np.sqrt(2))
+    # feature = rms/REF_RMS = (level * 0.5 / sqrt(2)) / REF_RMS = level * scale.
+    # Uses the real LOUDNESS_REF_RMS (not a hardcoded copy of its value) so
+    # this fixture stays correct across any future recalibration.
+    scale = 0.5 / (LOUDNESS_REF_RMS * np.sqrt(2))
     target_level = np.clip(target_features[0] / scale, 0.0, 1.0)
     return np.array([0.5, 0.5, target_level])
 

@@ -2,29 +2,42 @@ from unittest.mock import patch
 
 import numpy as np
 from backends.base import FakeCVBackend
+from features import LOUDNESS_REF_RMS
 from trajectory_control_loop import run_trajectory_control_loop
 
 
 class LinearFakeBackend(FakeCVBackend):
-    """Encodes current vca_level directly as the audio block's amplitude,
-    mirroring tests/test_control_loop.py's own LinearFakeBackend exactly,
-    so this loop's convergence is checkable end-to-end without a real
-    instrument or a chip."""
+    """Encodes current vca_level directly as the audio block's amplitude --
+    same idea as tests/test_control_loop.py's own LinearFakeBackend, but a
+    smaller amplitude coefficient (0.3, not 0.5). At LOUDNESS_REF_RMS=0.175,
+    coefficient 0.5 puts FakeCVBackend's default starting level (0.5) exactly
+    at the loudness-clip ceiling (rms/REF > 1.0) -- harmless for
+    run_control_loop's direct target-tracking (test_control_loop.py's test
+    still passes), but fatal for CEM here: every candidate whose rollout
+    doesn't escape the ceiling scores identically, so cem_plan's own search
+    degenerates on a flat landscape at the very first iteration and doesn't
+    reliably escape it within this test's candidate budget. 0.3 keeps the
+    starting reading comfortably unclipped (loudness(0.5)=0.606) with a
+    smooth, well-conditioned gradient from iteration 1, and the peak
+    loudness(1.0)=1.212 (clipped) still leaves goal=0.8 reachable at
+    level=0.660, nowhere near either boundary."""
 
     def read_audio_block(self) -> np.ndarray:
         level = self.last_known_cv("vca_level")
         t = np.arange(4096) / 48000.0
-        return (level * 0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        return (level * 0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
 
 
 def additive_predict_fn(states: np.ndarray, actions: np.ndarray) -> np.ndarray:
     # A toy world model that's an EXACT match for LinearFakeBackend's real
     # loudness-vs-vca_level relationship: mean loudness = rms/LOUDNESS_REF_RMS
-    # = (level * 0.5 / sqrt(2)) / 0.4, and level moves by exactly the applied
-    # action (channel order below puts vca_level last), so
+    # = (level * 0.3 / sqrt(2)) / LOUDNESS_REF_RMS, and level moves by exactly
+    # the applied action (channel order below puts vca_level last), so
     # next_loudness = loudness + action[-1] * scale exactly, absent CV
-    # clipping at the [0,1] boundary.
-    scale = 0.5 / (0.4 * np.sqrt(2))
+    # clipping at the [0,1] boundary. Uses the real LOUDNESS_REF_RMS (not a
+    # hardcoded copy of its value) so this fixture stays correct across any
+    # future recalibration.
+    scale = 0.3 / (LOUDNESS_REF_RMS * np.sqrt(2))
     next_states = states.copy()
     next_states[:, 0] = np.clip(states[:, 0] + actions[:, -1] * scale, 0.0, 1.0)
     return next_states

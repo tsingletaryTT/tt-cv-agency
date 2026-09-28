@@ -3,13 +3,24 @@ import numpy as np
 
 from backends.base import CVBackend
 
-LOUDNESS_REF_RMS = 0.4
+# Recalibrated 2026-09-28 against sequencer_test.vcv's real achievable RMS: a
+# 150-sample independent-uniform-random-CV recon pass (production settle/
+# window, zero clipped readings) measured raw RMS up to only ~0.157, median
+# ~0.012 -- the prior 0.4 value was calibrated against the older, simpler
+# single-oscillator bridge_test.vcv patch (see BRIGHTNESS_REF_HZ's own history
+# below for the same class of mistake) and was never re-checked after the
+# Minimoog/sequencer instrument replaced it, silently compressing loud_mean
+# into roughly [0, 0.39] for this patch's entire history regardless of data
+# collection strategy, model, or search budget. 0.175 gives ~11% headroom
+# above the observed max, matching this file's existing calibration
+# convention (see BRIGHTNESS_REF_HZ).
+LOUDNESS_REF_RMS = 0.175
 # Recalibrated against this patch's real achievable spectral centroid range: a
 # 150-sample random-CV recon pass measured raw (unnormalized) centroid values
 # up to ~6150 Hz (median ~365 Hz), so the prior 12000.0 value left brightness
 # permanently compressed into roughly the bottom half of [0, 1]. 7000.0 gives
-# ~14% headroom above the observed max, matching how LOUDNESS_REF_RMS=0.4
-# sits a similar margin above its own observed max RMS (~0.365).
+# ~14% headroom above the observed max, matching how LOUDNESS_REF_RMS's own
+# value sits a similar margin above its observed max RMS.
 BRIGHTNESS_REF_HZ = 7000.0
 PITCH_LOG_MIN_HZ = 20.0
 PITCH_LOG_MAX_HZ = 4000.0
