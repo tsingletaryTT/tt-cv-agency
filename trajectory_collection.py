@@ -99,17 +99,20 @@ if __name__ == "__main__":
     backend = VCVRackBackend("configs/sequencer_test.yaml")
     try:
         rng = np.random.default_rng(seed=0)
-        # Mixed seeding (Stage 3 tune-up, 2026-09-27): half the episode
-        # starts still come from Stage 2's novelty archive (diversity),
-        # half are freshly uniform-random (coverage of the "typical"
-        # region most real goals ask for -- see build_mixed_seed_cv_vectors'
-        # docstring and the design spec's Decision 1 for why archive-only
-        # seeding under-covers this region). Falls back to uniform-random
-        # starts entirely if the archive file isn't there, same as before.
+        # Archive-only seeding (reverted 2026-09-28): the Stage 3 tune-up's
+        # mixed archive/uniform seeding (build_mixed_seed_cv_vectors, still
+        # available and tested above) was tried and directly disconfirmed --
+        # replacing half the archive-seeded episodes with fresh uniform-random
+        # starts measurably NARROWED loud_mean coverage instead of widening
+        # it (see CLAUDE.md's "Stage 3 tune-up" section). Reverted to
+        # archive-only so this recollection isolates the LOUDNESS_REF_RMS
+        # recalibration as the only real variable relative to the original
+        # Stage 3 dataset. Falls back to uniform-random starts entirely if
+        # the archive file isn't there, same as before either strategy.
         seed_cv_vectors = None
         try:
             archive = np.load("data/sequencer_novelty_archive.npz")
-            seed_cv_vectors = build_mixed_seed_cv_vectors(archive["cv"], seed=1)
+            seed_cv_vectors = archive["cv"]
         except FileNotFoundError:
             pass
 
