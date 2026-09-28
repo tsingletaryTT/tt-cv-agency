@@ -2539,3 +2539,88 @@ together), that's a question for the *instrument*, not the *controller*
 — it would need a patch change (e.g. a second gain stage or a brighter
 noise/harmonic source that doesn't fight the filter for headroom the
 way this patch's signal path apparently does), not a smarter model.
+
+## New direction (2026-09-28): named presets, working backwards from
+"Buchla bongos" (West Coast) and "acid bass" (East Coast)
+
+The next concrete goal, given directly: get this system to actually
+produce two named, recognizable presets — one West Coast, one East
+Coast — via the small local LLM + Tenstorrent-hosted control loop,
+rather than continuing to test against abstract feature-space goals.
+"Acid bass" first, on the current `sequencer_test.vcv` instrument (no
+new patch needed — it's already East Coast/subtractive); "Buchla
+bongos" second, on a new West Coast instrument still to be built.
+
+**A real West Coast instrument turns out to be very buildable on this
+machine, not a compromise.** Surveyed every installed plugin pack
+(`plugin.json` manifests) for Buchla-relevant building blocks:
+- **Complex/FM oscillator**: `AudibleInstruments:Plaits` (Mutable Plaits
+  clone) — includes a "modal resonator" synthesis model, well-suited to
+  percussive/metallic tones specifically, not just tonal drones.
+- **Wavefolder**: `Befaco:ChoppingKinky` — literally described in its own
+  manifest as a "voltage-controllable, dual-channel wavefolder." Exact
+  match, not an approximation.
+- **Low-pass gate**: `AudibleInstruments:Streams` — explicitly tagged
+  `Low-pass gate` in its own manifest ("Dual Dynamics Gate"). The
+  vactrol-style percussive VCA+VCF combo that makes a pluck actually
+  sound plucked. Exact match.
+
+`Plaits → ChoppingKinky → Streams` is essentially the real Buchla Music
+Easel signal chain (complex oscillator → wavefolder → LPG), not a
+workaround — building this instrument is now a known-tractable task, not
+an open research question.
+
+### "Acid bass" needs the same envelope-triggering fix "bongos" would have needed anyway
+
+Both target presets turn out to share a prerequisite: a TB-303-style
+acid line's signature squelch comes from the filter envelope
+re-triggering **per note**, not from a static filter setting — an
+inherently gate/envelope-shaped, not steady-state, target. This patch's
+own filter envelope has had exactly the bug Stage 0 flagged and deferred
+("Known limitation, deferred to Stage 1: ADSR gating via a trigger
+pulse, not a sustained gate") — turns out its real cause was more subtle
+than Stage 0 assumed, and its real fix simpler.
+
+**Root cause, read from `SEQ3.cpp` directly** (not guessed): with the
+patch's current `clockPassthrough: false`, the internal clock computes a
+proper 50%-duty gate (`clockGate = phase < 0.5`) — then **unconditionally
+overwrites it** with the same 1ms pulse used for run/reset buttons,
+*before* either `TRIG_OUTPUT` or `CLOCK_OUTPUT` reads it:
+```cpp
+clockGate = (phase < 0.5f);          // real 50%-duty gate, computed...
+...
+if (!clockPassthrough) {
+    clockGate = clockPulse.process(args.sampleTime);  // ...then thrown away
+}
+outputs[TRIG_OUTPUT].setVoltage((clockGate && gates[index]) ? 10.f : 0.f);
+outputs[CLOCK_OUTPUT].setVoltage(clockGate ? 10.f : 0.f);
+```
+This means Stage 0's own proposed fix direction ("route the gate cable
+from `SEQ3.CLOCK_OUTPUT` instead of `TRIG_OUTPUT`") would **not** have
+worked either — under `clockPassthrough: false`, `CLOCK_OUTPUT` gets the
+exact same collapsed 1ms pulse as `TRIG_OUTPUT`, just without the
+per-step gate-toggle AND. The real fix needs `clockPassthrough: true`,
+which skips the overwrite entirely — at which point the *existing* cable
+(`SEQ3.TRIG_OUTPUT → ADSR.GATE_INPUT`, cable 114, already wired) starts
+carrying the real 50%-duty gate. **No cable rewiring needed at all** —
+just one boolean flip in `patches/sequencer_test.vcv`'s `patch.json`,
+module 10's `data.clockPassthrough`.
+
+**Verified for real, not assumed from the source read alone**: captured
+live spectral-centroid readings in 20ms hops (`filter_env_amount=1.0`,
+`sweep_depth=0.0` to isolate the envelope's own effect from the LFO
+sweep) after relaunching with the fix. Baseline centroid sits ~120-140 Hz
+between notes; each note shows a sharp attack spike (up to ~1089 Hz)
+followed by a **multi-hop decay tail** (e.g. one spike: 1089 → 277 → 186
+→ 198 → 201 → 206 → 198 Hz, decaying over ~120ms before returning to
+baseline) — a genuine attack-decay envelope shape, not the single-sample
+click the old 1ms pulse produced. Relaunch itself followed the documented
+procedure exactly (cwd=`Rack2Free/`, `END` marker appended after the
+non-graceful `kill -TERM` this required — the process didn't exit
+cleanly on SIGTERM, logged a crash-style stack trace, handled the same
+documented way as every prior non-clean exit in this project).
+
+**Not yet done**: actually running "acid bass" through
+`instruction_to_goal.py`/`instruction_to_preset.py` against this now-real
+envelope, or building the West Coast instrument itself. This section
+records the prerequisite fix and its verification only.
