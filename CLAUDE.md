@@ -2483,3 +2483,59 @@ no new collection needed; (2) if this goal turns out to be genuinely
 infeasible or extremely narrow, evaluate future fixes against a battery
 of goals checked for joint feasibility first, not one fixed hard case
 repeatedly.
+
+### Joint-feasibility check, run immediately after: this goal is very
+likely physically infeasible on this patch, not just hard to model
+
+Pooled every real measured feature vector available under the corrected
+loudness scale: the 150-sample systematic recon above (rescaled — it
+was collected *before* the `LOUDNESS_REF_RMS` fix, so its `loud_mean`
+column had to be rescaled by `0.4/0.175` before pooling; a real scale
+mismatch caught and fixed before trusting the first pass at this
+analysis) plus every state/next_state read in the freshly recollected
+600-transition trajectory dataset — **1350 real measurements total**,
+spanning both independent-uniform sampling and full random-walk
+exploration.
+
+Checked how close any of them gets to `(loud_mean=0.7, bright_mean=0.8,
+pitch_mean=0.6)` simultaneously:
+
+```
+closest real measurement (of 1350): loud_mean=0.243, bright_mean=0.740, pitch_mean=0.579
+  (max abs diff from goal: 0.457; Euclidean: 0.461)
+within 0.35 max-diff of the joint target: 0 / 1350
+```
+
+More decisive than the distance numbers alone: **zero** of 1350 samples
+have `loud_mean > 0.5` *and* `bright_mean > 0.6` at the same time. Among
+the 87 samples with `loud_mean > 0.5`, `bright_mean` never exceeds
+0.345. Among the 58 samples with `bright_mean > 0.6`, `loud_mean` never
+exceeds 0.277. The simple linear correlation between them
+(`+0.158`) is misleadingly weak-looking for what this actually is: not
+a weak relationship, but two regions of CV space that produce high
+values on each feature *never overlapping* in anything measured so far
+— an "either/or," not a dial that trades off gradually.
+
+**Net conclusion**: `[0.7, 0.15, 0.8, 0.15, 0.6, 0.15]` — the goal every
+comparison this whole session has been measured against — is very
+likely not achievable on `sequencer_test.vcv` as currently patched,
+independent of training data, model capacity, search budget, or
+normalization. This isn't confirmed as mathematically impossible (1350
+samples don't exhaustively cover an 8-dimensional CV space), but the
+mutual-exclusivity pattern is clean enough that "just collect more data"
+is very unlikely to change this answer. Three consecutive fixes each
+made the live number against this goal *worse*, in retrospect, not
+because any of the three fixes were wrong, but because the benchmark
+itself was plausibly never reachable — every fix was being graded
+against a target that may not exist on this patch.
+
+**Recommendation for whoever picks this up next**: retire this specific
+goal as the standing benchmark. Before trusting any future goal as a
+test case, run this same cheap check first — pool available real
+measurements, verify the goal's individual dimensions can coexist in the
+same sample, and only then spend a live hardware run confirming it. If
+a goal like this one is specifically wanted (loud *and* bright
+together), that's a question for the *instrument*, not the *controller*
+— it would need a patch change (e.g. a second gain stage or a brighter
+noise/harmonic source that doesn't fight the filter for headroom the
+way this patch's signal path apparently does), not a smarter model.
