@@ -2669,3 +2669,49 @@ project has had access to the whole time and mostly hasn't used. The
 combine-sink is a runtime setting, not persistent across a PipeWire
 restart/reboot — recreate it the same way if audio goes silent again
 after one.
+
+## `scripts/vcv-stack` (2026-09-28): packaging the whole runtime stack,
+and two more real bugs a live down/up cycle caught immediately
+
+Asked directly to stop re-deriving the launch/audio-routing procedure by
+hand every session and package it as real tooling. Added
+`scripts/vcv-stack` (`up` / `down` / `status` / `relink`, `--llm` to
+also manage the local model server) — a single script encoding every
+hand-debugged gotcha in this file's history as idempotent code: launch
+with `cwd=Rack2Free/`, check/fix the `END` log marker before every
+launch, a literal `ps` `comm`-field match for finding the Rack process
+(never `pgrep -f`), a discovered-not-hardcoded real sink paired into a
+combine-sink so VCV stays both audible and capturable, and state saved
+to `.vcv-stack-state` (gitignored) so `down` restores your actual
+original defaults instead of guessing.
+
+**A live `down`/`up` test cycle, run on request, caught two more real
+bugs immediately** — worth the exercise on its own:
+
+1. **Ordering.** The first version launched Rack, *then* set up audio
+   routing. A live test produced a Rack instance with **zero** PipeWire
+   ports at all — not even connected to the real hardware default it
+   should have fallen back to. This is exactly the Phase 1-era finding
+   from the very first section of this file, generalized: Rack's Audio
+   module snapshots the current default (or a remembered named device)
+   *at connect time* and does not retry later. Fixed by reordering
+   `cmd_up` to set up routing **before** launching Rack, not after.
+2. **A port-registration race.** Separately, `relink_rack_output`
+   (which re-links Rack's output through the combine-sink after a
+   relaunch) ran immediately after `find_rack_pid` succeeded — but the
+   *process* existing doesn't mean its audio engine has registered
+   PipeWire ports yet. Fixed with a poll loop (up to 15s) waiting for
+   `VCV Rack:output_FL` to actually appear before attempting to link it.
+
+Re-tested end to end after both fixes: `down` correctly stopped Rack,
+unloaded both virtual sinks, and restored the real original defaults
+(confirmed via `status`); `up` from a fully clean state loaded routing
+first, launched Rack, and confirmed "VCV Rack output confirmed routed
+through vcv_and_hdmi" on the very first attempt — no manual relink
+needed, unlike every prior relaunch this session. Full test suite still
+157 passed / 7 deselected throughout (this is all shell/PipeWire/process
+work, untouched by anything Python-side).
+
+**Not tested live**: `--llm` (starting/stopping the local model server
+via this script) — the server was already running throughout this
+session, so the start path only got a code review, not a real exercise.

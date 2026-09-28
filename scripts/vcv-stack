@@ -225,16 +225,31 @@ relink_rack_output() {
     log "  Rack isn't running, nothing to relink"
     return 0
   fi
+
+  # The process existing (find_rack_pid succeeding) does not mean its audio
+  # engine has registered PipeWire ports yet -- caught live testing this
+  # script: right after a fresh launch, "VCV Rack:output_FL" doesn't exist
+  # in `pw-link -l` for a moment, so linking to it silently no-ops. Poll for
+  # the port to actually appear before attempting to (re)link it.
+  local waited=0
+  while [ "$waited" -lt 15 ] && ! pw-link -l 2>/dev/null | grep -q "VCV Rack:output_FL"; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
   for ch in FL FR; do
     pw-link -d "VCV Rack:output_$ch" "${NULL_SINK_NAME}:playback_$ch" >/dev/null 2>&1
     pw-link "VCV Rack:output_$ch" "${COMBINE_SINK_NAME}:playback_$ch" >/dev/null 2>&1
   done
-  if pw-link -l 2>/dev/null | grep -q "VCV Rack:output_FL" ; then
+
+  if pw-link -l 2>/dev/null | grep -q "VCV Rack:output_FL"; then
     if pw-link -l 2>/dev/null | grep -A1 "VCV Rack:output_FL" | grep -q "$COMBINE_SINK_NAME"; then
       log "  VCV Rack output confirmed routed through $COMBINE_SINK_NAME"
     else
       err "  WARNING: couldn't confirm VCV Rack's output is linked through $COMBINE_SINK_NAME -- check 'pw-link -l' by hand"
     fi
+  else
+    err "  WARNING: VCV Rack:output_FL never appeared in PipeWire after ${waited}s -- run '$0 relink' again once it's fully up"
   fi
 }
 
@@ -325,11 +340,22 @@ cmd_up() {
   local with_llm=0
   [ "${1:-}" = "--llm" ] && with_llm=1
 
+  # Audio routing MUST be set up before Rack launches, not after: this
+  # project's own Phase 1 history already established that Rack's Audio
+  # module snapshots the current default sink (or a remembered named
+  # device) at connect time and does not retry -- launching first, then
+  # switching defaults, was caught live producing a Rack instance with
+  # ZERO PipeWire ports at all (not even connected to the real hardware
+  # default it should have fallen back to). Cheap to always do this even
+  # when Rack turns out to already be running (setup_audio_routing/
+  # relink_rack_output are both idempotent).
+  log "== Audio routing =="
+  setup_audio_routing || return 1
+
   log "== VCV Rack =="
   start_rack || return 1
 
-  log "== Audio routing =="
-  setup_audio_routing || return 1
+  log "== Audio routing (post-launch relink) =="
   relink_rack_output
 
   log "== Local LLM server =="
