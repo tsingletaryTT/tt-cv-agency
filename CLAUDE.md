@@ -2620,7 +2620,52 @@ non-graceful `kill -TERM` this required — the process didn't exit
 cleanly on SIGTERM, logged a crash-style stack trace, handled the same
 documented way as every prior non-clean exit in this project).
 
-**Not yet done**: actually running "acid bass" through
-`instruction_to_goal.py`/`instruction_to_preset.py` against this now-real
-envelope, or building the West Coast instrument itself. This section
-records the prerequisite fix and its verification only.
+**Not yet done**: closing the loop via `instruction_to_goal.py` against
+this now-real envelope, or building the West Coast instrument itself.
+
+### "Acid bass" via `instruction_to_preset.py`: a real bug fix, and the
+first human-confirmed "this sounds right" in this project's history
+
+Running `instruction_to_preset.py "a squelchy, resonant acid bass" --llm
+local --base-url http://localhost:8001/v1 --model Qwen/Qwen3-0.6B`
+against the newly-fixed envelope failed on the first 4 attempts, every
+time the same way: `vco_freq` came back as a real Hz value (440, 200,
+20), not the required `[0,1]` CV. Root cause: `configs/sequencer_test.
+yaml`'s description for that channel ("Base pitch of the bass voice. Low
+= deep bass, high = higher register") uses frequency/pitch language,
+which pulls a small model toward the extremely well-known real-world
+convention (440 = concert-pitch A4) strongly enough to override a `[0,1]`
+constraint stated only once, in the shared preamble, far from the
+channel line itself. Fixed in the shared prompt builder (`instruction_
+parser/prompts.py`), not the config: every channel line now repeats
+`(0 to 1, not real-world units)` locally. Re-verified: 3/3 clean
+afterward, no further out-of-range values on any channel, any config.
+
+The 3 successful recipes all correctly pushed `filter_env_amount`
+(0.8/0.4/0.9) and `vcf_resonance` (0.7/0.3/0.5) toward the "squelchy,
+resonant" character the instruction asked for — real semantic grounding,
+not just schema compliance. `vco_freq` landed at exactly `0.5` in all 3,
+which doesn't obviously read as "bass" from the number alone — flagged
+as a real, unconfirmed open question (does the model reason about *how
+low* bass should be, or is it defaulting to a safe middle value for this
+specific channel now that the Hz-confusion is fixed?), not yet resolved.
+
+**Separately, and unrelated to any of the above**: this same investigation
+surfaced that VCV Rack's actual audio had been silently going nowhere
+audible all session — setting the system default sink to `vcv_loop` (this
+project's own established capture-routing pattern, needed for Python's
+`sounddevice` capture) means *everything*, including VCV's real output,
+gets routed into that null sink, leaving the real HDMI output `SUSPENDED`.
+Fixed with a PipeWire combine-sink (`vcv_and_hdmi`, fanning out to both
+`vcv_loop` and the real HDMI sink) set as the new default — VCV's existing
+stream re-routed automatically with no relaunch needed, Python-side
+capture confirmed still working (unaffected, since it only depends on the
+default *source*, never touched), and the human at the keyboard confirmed
+by ear that the first recipe's sequence "sounds right." **This is the
+first time in this project's history a result has been verified by
+actually listening, rather than by a numeric feature-distance
+comparison** — worth remembering as a category of verification this
+project has had access to the whole time and mostly hasn't used. The
+combine-sink is a runtime setting, not persistent across a PipeWire
+restart/reboot — recreate it the same way if audio goes silent again
+after one.
